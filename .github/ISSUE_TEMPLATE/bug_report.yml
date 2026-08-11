@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a reproducible defect in AI Development Team
+title: '[Bug]: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Remove credentials, prompts containing private data, and `.ai-dev-team` or `.ai-team` state before sharing logs.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I reproduced this with a clean install using `npm ci`.
+          required: true
+        - label: I removed secrets and sensitive project data from this report.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Package version or commit SHA where the problem occurs.
+      placeholder: 0.1.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Claude Code
+        - OpenCode
+        - Codex CLI
+        - Mock runtime
+        - Provider-oriented orchestrator
+        - Not runtime-specific
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Node.js version, npm version, and runtime CLI version if applicable.
+      placeholder: Windows 11; Node 22.x; npm 10.x; Codex CLI version ...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest safe project setup and exact command needed to reproduce the issue.
+      placeholder: |
+        1. Run ...
+        2. Select ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Include sanitized output and exit codes. Do not paste credentials or private workflow state.
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Add any relevant configuration, screenshots, or sanitized logs.

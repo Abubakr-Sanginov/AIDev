@@ -1,0 +1,69 @@
+name: Feature request
+description: Propose a focused improvement grounded in a real workflow
+title: '[Feature]: '
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the user problem before proposing an implementation. Requests are evaluated against the project's safety boundaries and maintenance capacity.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission checks
+      options:
+        - label: I searched existing issues and documentation for this capability.
+          required: true
+        - label: This request does not require weakening path confinement, approval, or credential-handling safeguards.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who is affected, what are they trying to do, and what currently prevents it?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe observable behavior rather than prescribing internal implementation details.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain current workarounds and why they are insufficient.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Orchestration workflow
+        - Runtime adapter
+        - Safety and approvals
+        - State and resume
+        - Terminal experience
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Suggested acceptance criteria
+      description: List verifiable outcomes, including tests or documentation where appropriate.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized examples or links that clarify the workflow.

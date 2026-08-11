@@ -1,5 +1,8 @@
 # AI Development Team
 
+[![CI](https://github.com/Abubakr-Sanginov/AIDev/actions/workflows/ci.yml/badge.svg)](https://github.com/Abubakr-Sanginov/AIDev/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 AI Development Team is a sandboxed TypeScript CLI that coordinates user-installed AI coding agents. It assigns specialized roles to supported runtimes, persists workflow state, and verifies generated changes through a Coder-Fixer loop.
 
 The project does not bundle a model or manage credentials for external coding-agent CLIs. Install and authenticate the runtime you intend to use.
@@ -155,6 +158,20 @@ Paths are resolved against the selected project root. Traversal outside that roo
 These controls reduce risk but cannot make generated code or third-party runtimes inherently trustworthy. Review every change, use a disposable branch or working copy for important projects, and never commit credentials, runtime state, logs, or real user fixtures.
 
 Current limitations include sequential role execution, no automated Git branch management, and resume behavior that restarts the persisted goal rather than reconstructing an exact provider conversation. Runtime-specific restrictions are documented in `docs/runtimes.md`.
+
+## Project status and roadmap
+
+AI Development Team is an early-stage project under active, capacity-dependent maintenance. The current focus is reliability and safety rather than a fixed release schedule.
+
+Near-term directions are:
+
+- make persisted resume continue from safe workflow checkpoints instead of restarting the goal;
+- make stop and pause affect active runtime processes rather than only persisted state;
+- improve cross-platform runtime process and terminal behavior;
+- expand adapter contract and security regression coverage; and
+- evaluate isolated Git branch or worktree workflows without weakening approval safeguards.
+
+These are directions, not delivery commitments. Track scoped work in [GitHub Issues](https://github.com/Abubakr-Sanginov/AIDev/issues); proposals should include verifiable acceptance criteria.
 
 ## Contributing
 
