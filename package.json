@@ -42,7 +42,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.39.0",
+    "@anthropic-ai/sdk": "^0.116.0",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",
     "cross-spawn": "^7.0.6",
