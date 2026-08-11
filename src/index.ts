@@ -10,6 +10,8 @@ export { OpenCodeRuntime } from './runtimes/opencode/runtime.js';
 export { RuntimeOrchestrator } from './runtimes/runtime-orchestrator.js';
 export { SystemTerminalLauncher } from './terminal/system-launcher.js';
 export { StateStore } from './state-store.js';
+export { inspectProject, formatProjectContext, validateProjectRoot } from './project-context.js';
+export type { ProjectContext, InspectProjectOptions } from './project-context.js';
 export { roles, getRole } from './roles.js';
 export { allTools, executeTool } from './tools/index.js';
 export type * from './types.js';

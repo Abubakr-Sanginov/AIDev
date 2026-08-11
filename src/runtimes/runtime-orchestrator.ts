@@ -1,7 +1,7 @@
 import { readdir } from 'node:fs/promises';
-import { detectProjectLayers } from './layer-detector.js';
 import type { CodingRuntime, RuntimeResult, RuntimeSession } from './runtime.js';
 import { getRole, isReadOnlyRole, roles } from '../roles.js';
+import { formatProjectContext, inspectProject, type ProjectContext } from '../project-context.js';
 
 export type RuntimeWorkflowEventStatus =
   'RUNNING' | 'ACTIVE' | 'RETRYING' | 'DONE' | 'FAILED' | 'SKIPPED' | 'CANCELLED';
@@ -26,6 +26,7 @@ export interface RuntimeWorkflowState {
   completedPhases?: number;
   totalPhases?: number;
   currentRoleId?: string;
+  projectContext?: ProjectContext;
 }
 export interface RuntimeWorkflowOptions {
   root: string;
@@ -80,8 +81,10 @@ export class RuntimeOrchestrator {
   }
 
   async run(goal: string): Promise<RuntimeWorkflowState> {
+    const projectContext = await inspectProject(this.#root);
+    const projectSummary = formatProjectContext(projectContext);
     const now = new Date().toISOString();
-    const implementationRoles = await this.#implementationRoles(goal);
+    const implementationRoles = this.#implementationRoles(goal, projectContext);
     const skippedLayers = ['backend', 'frontend'].filter(
       (roleId) => !implementationRoles.includes(roleId),
     );
@@ -97,6 +100,7 @@ export class RuntimeOrchestrator {
       updatedAt: now,
       completedPhases: 0,
       totalPhases: this.#scheduledRoles.length,
+      projectContext,
     };
     const artifacts: Record<string, string> = {};
     for (const roleId of skippedLayers) {
@@ -112,20 +116,20 @@ export class RuntimeOrchestrator {
     const initialProjectArtifacts = await this.#projectArtifacts();
     artifacts.manager = await this.#safeExecute(
       'manager',
-      `Customer request:\n${goal}`,
+      `Target project directory: ${this.#root}\nexistingProject: ${projectContext.existingProject}\n${projectSummary}\n\nCustomer request:\n${goal}`,
       state,
       'Manager failed; continue from the customer request.',
     );
     artifacts.architect = await this.#safeExecute(
       'architect',
-      this.#artifactHandoff(goal, artifacts),
+      this.#artifactHandoff(goal, artifacts, projectSummary),
       state,
       'Architecture unavailable; continue conservatively and report the gap.',
     );
     for (const roleId of implementationRoles)
       artifacts[roleId] = await this.#safeExecute(
         roleId,
-        this.#artifactHandoff(goal, artifacts),
+        this.#artifactHandoff(goal, artifacts, projectSummary),
         state,
         `${roleId} failed; continue independent work and report the gap.`,
       );
@@ -141,7 +145,7 @@ export class RuntimeOrchestrator {
     }
     artifacts.tester = await this.#safeExecute(
       'tester',
-      this.#artifactHandoff(goal, artifacts),
+      this.#artifactHandoff(goal, artifacts, projectSummary),
       state,
       'Testing unavailable; Reviewer must report the verification gap.',
     );
@@ -152,7 +156,7 @@ export class RuntimeOrchestrator {
         state.attempts += 1;
         artifacts.fixer = await this.#safeExecute(
           'fixer',
-          this.#artifactHandoff(goal, artifacts),
+          this.#artifactHandoff(goal, artifacts, projectSummary),
           state,
           'Fix failed; preserve defect for review.',
         );
@@ -164,7 +168,7 @@ export class RuntimeOrchestrator {
         }
         artifacts.tester = await this.#safeExecute(
           'tester',
-          this.#artifactHandoff(goal, artifacts),
+          this.#artifactHandoff(goal, artifacts, projectSummary),
           state,
           'Retest unavailable; preserve verification gap.',
         );
@@ -176,7 +180,7 @@ export class RuntimeOrchestrator {
     if (!this.#reportsDefects(artifacts.tester) && !artifacts.tester.startsWith('[UNAVAILABLE ')) {
       review = await this.#safeExecute(
         'reviewer',
-        this.#artifactHandoff(goal, artifacts),
+        this.#artifactHandoff(goal, artifacts, projectSummary),
         state,
         'Review unavailable; workflow ended with diagnostic evidence.',
       );
@@ -196,11 +200,10 @@ export class RuntimeOrchestrator {
     return state;
   }
 
-  async #implementationRoles(goal: string): Promise<string[]> {
-    const detected = await detectProjectLayers(this.#root);
+  #implementationRoles(goal: string, projectContext: ProjectContext): string[] {
     const fullStack = FULL_STACK_SIGNAL.test(goal);
-    const backend = fullStack || BACKEND_SIGNAL.test(goal) || detected.backend;
-    const frontend = fullStack || FRONTEND_SIGNAL.test(goal) || detected.frontend;
+    const backend = fullStack || BACKEND_SIGNAL.test(goal) || projectContext.layers.backend;
+    const frontend = fullStack || FRONTEND_SIGNAL.test(goal) || projectContext.layers.frontend;
     if (backend && frontend) return ['backend', 'frontend'];
     if (backend) return ['backend'];
     if (frontend) return ['frontend'];
@@ -263,11 +266,15 @@ export class RuntimeOrchestrator {
     return `[UNAVAILABLE ${roleId}] ${diagnostic}. ${fallback}`;
   }
 
-  #artifactHandoff(goal: string, artifacts: Record<string, string>): string {
+  #artifactHandoff(
+    goal: string,
+    artifacts: Record<string, string>,
+    projectSummary: string,
+  ): string {
     const sections = Object.entries(artifacts).map(
       (entry) => `## ${entry[0]}\n${entry[1].slice(0, 6000)}`,
     );
-    return `Target project directory: ${this.#root}\nAll filesystem and command operations MUST use this directory as the working directory.\nGoal: ${goal}\nConcise upstream artifacts:\n${sections.join('\n')}`;
+    return `Target project directory: ${this.#root}\nAll filesystem and command operations MUST use this directory as the working directory.\n${projectSummary}\nGoal: ${goal}\nConcise upstream artifacts:\n${sections.join('\n')}`;
   }
 
   async #projectArtifacts(): Promise<number> {

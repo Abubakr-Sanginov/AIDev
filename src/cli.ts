@@ -11,6 +11,7 @@ import {
 import { StateStore } from './state-store.js';
 import { roles } from './roles.js';
 import { createApprover, type ApprovalMode } from './approval.js';
+import { validateProjectRoot } from './project-context.js';
 
 const program = new Command();
 program
@@ -185,6 +186,7 @@ async function ensureRuntime(runtimeId: string, approval: ApprovalMode) {
 }
 async function run(goal?: string): Promise<void> {
   const config = options();
+  await validateProjectRoot(config.root);
   const runtimeId = await resolveRuntimeId(config.runtimeId);
   const runtime = await ensureRuntime(runtimeId, config.approval);
   const model = await resolveModel(runtime, config.root, config.model);
@@ -220,7 +222,8 @@ program
   .command('init')
   .description('Initialize project state.')
   .action(async () => {
-    await new StateStore(options().root).initialize();
+    const root = await validateProjectRoot(options().root);
+    await new StateStore(root).initialize();
     process.stdout.write('[ DONE ] Initialized .ai-dev-team.\n');
   });
 program

@@ -9,6 +9,8 @@ export interface AgentRole {
 }
 const artifact =
   'Return a concise structured artifact: status, summary, decisions, files changed, commands run, risks, and handoff.';
+const existingProjectRules =
+  'Treat targetRoot and existingProject from the supplied ProjectContext as authoritative. For an existing project, preserve its architecture, framework, package manager, style, and conventions. Read relevant instruction, configuration, source, and test files before making changes. Update in place and do not re-scaffold or replace the project unless the customer explicitly requires it. ';
 export const roles: AgentRole[] = [
   {
     id: 'manager',
@@ -18,7 +20,7 @@ export const roles: AgentRole[] = [
     dependsOn: [],
     budget: { maxSteps: 6, maxToolCalls: 0 },
     systemPrompt:
-      'You are a read-only planning coordinator. Analyze only the request and supplied context. Produce a structured project plan, scoped role assignments, dependencies, deadlines/budgets, and acceptance criteria. Never call tools, inspect with shell, run commands, edit files, or implement code. Completion is the plan; stop immediately after it. ' +
+      'You are a read-only planning coordinator. Analyze only the request and supplied ProjectContext. Treat targetRoot and existingProject as authoritative, preserve the existing architecture, framework, package manager, style, and conventions, and never propose re-scaffolding an existing project unless explicitly requested. Produce a structured project plan, scoped role assignments, dependencies, deadlines/budgets, and acceptance criteria. Never call tools, inspect with shell, run commands, edit files, or implement code. Completion is the plan; stop immediately after it. ' +
       artifact,
   },
   {
@@ -29,6 +31,7 @@ export const roles: AgentRole[] = [
     dependsOn: ['manager'],
     budget: { maxSteps: 14, maxToolCalls: 12 },
     systemPrompt:
+      existingProjectRules +
       'Design structure, boundaries, data flow, interfaces, and contracts before development. Update architecture documentation only; do not implement product features. ' +
       artifact,
   },
@@ -40,6 +43,7 @@ export const roles: AgentRole[] = [
     dependsOn: ['architect'],
     budget: { maxSteps: 24, maxToolCalls: 20 },
     systemPrompt:
+      existingProjectRules +
       'Implement only assigned server-side, API, data, persistence, or business-logic work against architect contracts. Work within the project framework and its conventions; backend work may live in a full-stack framework or standalone service. If no backend scope exists, report skipped. ' +
       artifact,
   },
@@ -51,6 +55,7 @@ export const roles: AgentRole[] = [
     dependsOn: ['architect'],
     budget: { maxSteps: 24, maxToolCalls: 20 },
     systemPrompt:
+      existingProjectRules +
       'Implement only assigned user-facing UI or client work against architect contracts. Work within the project framework and its conventions; frontend work may share a full-stack repository. If no frontend scope exists, report skipped. ' +
       artifact,
   },
@@ -62,6 +67,7 @@ export const roles: AgentRole[] = [
     dependsOn: ['architect'],
     budget: { maxSteps: 16, maxToolCalls: 14 },
     systemPrompt:
+      existingProjectRules +
       'Perform only explicitly assigned general/basic implementation, glue, configuration, or automation. Do not take over specialized roles. If no scoped task exists, report skipped. ' +
       artifact,
   },
@@ -84,6 +90,7 @@ export const roles: AgentRole[] = [
     dependsOn: ['tester'],
     budget: { maxSteps: 18, maxToolCalls: 16 },
     systemPrompt:
+      existingProjectRules +
       'Fix only Tester-reported defects or explicitly routed orchestration/runtime failures. Make the smallest correction; do not add unrelated features. ' +
       artifact,
   },

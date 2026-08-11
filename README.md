@@ -96,6 +96,18 @@ Common options include:
 
 Omitting `--model` uses the runtime's automatic selection. OpenCode model IDs are discovered from its CLI. Claude Code and Codex do not expose a safe account-filtered model list through the adapter, so their interactive selector offers automatic selection rather than guessed model names.
 
+## Existing projects
+
+Run `ai-dev-team "task"` from an existing project root to update that project in place. Before planning, the CLI performs a bounded metadata scan of the project structure, manifests, scripts, configuration, documentation, source paths, and test paths. It uses that context to preserve the project architecture and conventions while making changes.
+
+Use `-C <path>` to select a project explicitly:
+
+```sh
+ai-dev-team -C <path> "task"
+```
+
+The scan is intentionally bounded. Secret, vendor, and generated files are excluded, and symlink directories are not traversed.
+
 ## Usage
 
 Start an interactive run:
