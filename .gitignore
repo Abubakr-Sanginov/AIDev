@@ -1,0 +1,73 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Environment files and local credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Runtime state, caches, logs, and temporary files
+.ai-team/
+.ai-dev-team/
+.tmp/
+tmp/
+temp/
+.cache/
+*.log
+*.pid
+*.seed
+*.sqlite
+*.sqlite3
+*.db
+
+# Local Postman workspace metadata
+.postman/
+
+# IDE and operating-system files
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local reports and diagnostic captures
+completion-report.txt
+inspect*.txt
+inspect*.json
+opencode.txt
+orch-slice.txt
+process-snapshot.txt
+runtime*.txt
+snapshot.txt
+typecheck-*.txt
+candidate.id
+event.status
+
+# Accidental shell/test artifacts at the repository root
+/({
+/Object.assign(new
+/\[\]
+/false
+/rename(temporary
+/request.toolPolicy)).toEqual(\[
+/roleId
+/roleId)).toContain('reviewer')
+/roleId)).toEqual(\[
+/this.#onState(snapshot))
+/undefined)
+/void)
+/{
+/{`r`n

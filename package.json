@@ -1,0 +1,62 @@
+{
+  "name": "ai-dev-team",
+  "version": "0.1.0",
+  "description": "A sandboxed TypeScript CLI that coordinates installed AI coding agents through a Coder-Fixer workflow.",
+  "license": "MIT",
+  "author": "Abubakr Sanginov",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Abubakr-Sanginov/AIDev.git"
+  },
+  "homepage": "https://github.com/Abubakr-Sanginov/AIDev#readme",
+  "bugs": {
+    "url": "https://github.com/Abubakr-Sanginov/AIDev/issues"
+  },
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "orchestration",
+    "typescript"
+  ],
+  "type": "module",
+  "bin": {
+    "ai-dev-team": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --check .",
+    "test": "vitest run",
+    "dev": "tsx src/cli.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "chalk": "^5.4.1",
+    "commander": "^13.1.0",
+    "cross-spawn": "^7.0.6",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.22.0",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.13.10",
+    "eslint": "^9.22.0",
+    "prettier": "^3.5.3",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "typescript-eslint": "^8.26.0",
+    "vitest": "^3.0.8"
+  }
+}
