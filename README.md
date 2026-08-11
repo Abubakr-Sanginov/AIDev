@@ -42,15 +42,39 @@ The supported real runtimes are Claude Code, OpenCode, and Codex CLI. Runtime au
 
 ## Installation
 
+Install the published CLI globally from npm without cloning or downloading the source repository:
+
 ```text
-git clone https://github.com/Abubakr-Sanginov/AIDev.git
-cd AIDev
-npm ci
-npm run build
-npm link
+npm install -g ai-dev-team
 ```
 
-After linking, run `ai-dev-team` from the project you want the agents to modify, or pass its path with `-C`.
+Verify the installation:
+
+```text
+ai-dev-team --help
+```
+
+To run the CLI without keeping a global installation:
+
+```text
+npx ai-dev-team
+```
+
+Update a global installation:
+
+```text
+npm update -g ai-dev-team
+```
+
+Remove a global installation:
+
+```text
+npm uninstall -g ai-dev-team
+```
+
+The published package contains the compiled `dist/` output and does not include the `src/` directory. As with other installed JavaScript packages, the package contents remain accessible to the user; excluding `src/` is a packaging choice, not source-code protection or encryption.
+
+After installation, run `ai-dev-team` from the project you want the agents to modify, or pass its path with `-C`.
 
 ## Configuration
 
