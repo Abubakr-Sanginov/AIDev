@@ -15,7 +15,23 @@ The project does not bundle a model or manage credentials for external coding-ag
 - Deterministic mock runtime for tests, including failure, timeout, crash, and retry scenarios
 - Persistent workflow state and role handoffs
 - Project-root path confinement, command policy, approvals, timeouts, and bounded output
-- Terminal dashboard with optional visible runtime-output windows
+- Themed ASCII dashboard with banner, progress bar, live spinner, and end-of-run summary
+- Diagnostics (`doctor`), run history (`history`), Markdown reports (`report`), persistent defaults (`config`), and state cleanup (`clean`)
+- Automatic per-project run history recorded to `.ai-dev-team/history.jsonl`
+
+## What's new in 0.2.0
+
+1. ASCII-art startup banner with per-line gradient colors
+2. Boxed live dashboard with overview, agents, and activity panels
+3. Unicode progress bar with percentage, elapsed time, and ETA
+4. Color themes via `--theme default|ocean|forest|mono` (`NO_COLOR` is still respected)
+5. Animated spinner and live elapsed timer while the workflow runs
+6. `ai-dev-team doctor` environment and runtime diagnostics
+7. `ai-dev-team history` — recent runs with status, duration, runtime, and goal
+8. `ai-dev-team report` — Markdown export of the latest run to `.ai-dev-team/report-*.md`
+9. `ai-dev-team config` — persistent per-project defaults (`runtime`, `model`, `approval`, `theme`)
+10. `ai-dev-team clean` — safe removal of persisted state with confirmation
+11. End-of-run summary panel with duration, fix cycles, sessions, and event counts
 
 ## Architecture
 
@@ -90,11 +106,21 @@ Common options include:
 --approval <ask|always|never>
 --agent-attempts <count>
 --fix-attempts <count>
+--theme <default|ocean|forest|mono>
 --no-runtime-terminal
 -C <project-directory>
 ```
 
 Omitting `--model` uses the runtime's automatic selection. OpenCode model IDs are discovered from its CLI. Claude Code and Codex do not expose a safe account-filtered model list through the adapter, so their interactive selector offers automatic selection rather than guessed model names.
+
+Persistent per-project defaults can be stored with the `config` command and are applied when the matching flag is omitted:
+
+```text
+ai-dev-team config                 # show current defaults
+ai-dev-team config set runtime claude
+ai-dev-team config set theme ocean
+ai-dev-team config reset
+```
 
 ## Existing projects
 
@@ -136,6 +162,16 @@ ai-dev-team agents
 ai-dev-team runtimes
 ```
 
+Utility commands:
+
+```text
+ai-dev-team doctor    # diagnose Node.js, git, config, and runtimes
+ai-dev-team history   # list recent runs for this project
+ai-dev-team report    # export a Markdown report of the latest run
+ai-dev-team config    # show or set persistent defaults
+ai-dev-team clean     # remove persisted .ai-dev-team state
+```
+
 Risky commands request approval by default. `--approval never` rejects them. Use `--approval always` only in a trusted environment.
 
 ## Development
@@ -173,7 +209,12 @@ src/
   runtimes/     Runtime registry, process control, and CLI adapters
   terminal/     Runtime terminal launchers and log follower
   tools/        Confined file and command tools
+  ui/           ASCII banner, themes, panels, and dashboard rendering
   cli.ts        Command-line entry point
+  config.ts     Persistent per-project CLI defaults
+  doctor.ts     Environment and runtime diagnostics
+  history.ts    Append-only run history (JSONL)
+  report.ts     Markdown run report export
   orchestrator.ts
                 Provider-based Manager-Coder-Fixer workflow
 tests/          Unit, integration, and workflow regression tests

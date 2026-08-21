@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import { createDefaultRegistry } from './runtimes/default-registry.js';
@@ -12,12 +13,28 @@ import { StateStore } from './state-store.js';
 import { roles } from './roles.js';
 import { createApprover, type ApprovalMode } from './approval.js';
 import { validateProjectRoot } from './project-context.js';
+import {
+  formatDuration,
+  panel,
+  renderBanner,
+  renderDashboard,
+  resolveTheme,
+  statusBadge,
+  THEME_NAMES,
+  type Theme,
+} from './ui/ascii.js';
+import { loadConfig, resetConfig, setConfigValue, type CliConfig } from './config.js';
+import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
+import { runDoctor } from './doctor.js';
+import { writeReport } from './report.js';
+
+const VERSION = '0.2.0';
 
 const program = new Command();
 program
   .name('ai-dev-team')
   .description('Orchestrate user-installed AI coding agents.')
-  .version('0.1.0');
+  .version(VERSION);
 program
   .option('-C, --directory <path>', 'project directory', process.cwd())
   .option('--runtime <id>', 'coding runtime: claude, opencode, codex, or mock')
@@ -26,6 +43,7 @@ program
   .option('--agent-attempts <count>', 'attempts per agent/runtime stage', '3')
   .option('--retry-backoff-ms <ms>', 'initial exponential retry backoff', '1000')
   .option('--fix-attempts <count>', 'maximum tester-fixer-retest cycles', '2')
+  .option('--theme <name>', `color theme: ${THEME_NAMES.join(', ')}`)
   .option('--verbose', 'show low-level runtime activity')
   .option('--runtime-terminal', 'show controlled real-runtime output in terminal windows')
   .option('--no-runtime-terminal', 'run real-runtime processes headlessly');
@@ -40,12 +58,14 @@ function options(): {
   retryBackoffMs: number;
   maxFixAttempts: number;
   verbose: boolean;
+  theme?: string;
 } {
   const value = program.opts<{
     directory: string;
     runtime?: string;
     model?: string;
     approval: string;
+    theme?: string;
     runtimeTerminal: boolean;
     agentAttempts: string;
     retryBackoffMs: string;
@@ -54,6 +74,7 @@ function options(): {
   }>();
   if (!['ask', 'always', 'never'].includes(value.approval))
     throw new Error('--approval must be ask, always, or never.');
+  if (value.theme !== undefined) resolveTheme(value.theme);
   const maxAgentAttempts = Number.parseInt(value.agentAttempts, 10);
   const retryBackoffMs = Number.parseInt(value.retryBackoffMs, 10);
   const maxFixAttempts = Number.parseInt(value.fixAttempts, 10);
@@ -69,8 +90,15 @@ function options(): {
     retryBackoffMs,
     maxFixAttempts,
     verbose: value.verbose ?? false,
+    ...(value.theme === undefined ? {} : { theme: value.theme }),
   };
 }
+
+let sessionTheme: Theme | undefined;
+function currentTheme(): Theme {
+  return sessionTheme ?? resolveTheme(program.opts<{ theme?: string }>().theme);
+}
+
 async function prompt(question: string): Promise<string> {
   if (!process.stdin.isTTY) throw new Error('Interactive input is unavailable.');
   const reader = createInterface({ input: process.stdin, output: process.stdout });
@@ -122,7 +150,9 @@ async function resolveModel(
   ]);
   return selected === 'auto' ? undefined : selected;
 }
+
 let rendered = false;
+let bannerShown = false;
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
 export function renderRuntimeState(
   state: RuntimeWorkflowState,
@@ -158,9 +188,14 @@ export function renderRuntimeState(
 }
 function render(state: RuntimeWorkflowState): void {
   const config = options();
+  const theme = currentTheme();
   if (process.stdout.isTTY && rendered) process.stdout.write('\x1B[H\x1B[2J');
+  const showBanner = Boolean(process.stdout.isTTY) || !bannerShown;
   rendered = true;
-  process.stdout.write(renderRuntimeState(state, config.root, config.verbose));
+  bannerShown = true;
+  process.stdout.write(
+    `${showBanner ? renderBanner(theme, VERSION) : ''}${renderDashboard(state, config.root, theme, { verbose: config.verbose })}\n`,
+  );
 }
 async function ensureRuntime(runtimeId: string, approval: ApprovalMode) {
   const runtime = createDefaultRegistry().get(runtimeId);
@@ -184,14 +219,48 @@ async function ensureRuntime(runtimeId: string, approval: ApprovalMode) {
   }
   return runtime;
 }
+async function recordHistory(
+  root: string,
+  goal: string,
+  state: RuntimeWorkflowState,
+  model?: string,
+): Promise<void> {
+  try {
+    const finishedAt = new Date().toISOString();
+    const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
+    const record: RunRecord = {
+      goal,
+      runtimeId: state.runtimeId,
+      status: state.status,
+      attempts: state.attempts,
+      finishedAt,
+      ...(model === undefined ? {} : { model }),
+      ...(state.startedAt === undefined ? {} : { startedAt: state.startedAt }),
+      ...(Number.isNaN(startedMs) ? {} : { durationMs: Date.now() - startedMs }),
+    };
+    await appendRunRecord(root, record);
+  } catch (error) {
+    process.stderr.write(
+      `[ WARNING ] Could not record run history: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+  }
+}
 async function run(goal?: string): Promise<void> {
   const config = options();
+  const saved = await loadConfig(config.root).catch((): CliConfig => ({}));
+  sessionTheme = resolveTheme(config.theme ?? saved.theme);
+  const approval =
+    program.getOptionValueSource('approval') === 'cli'
+      ? config.approval
+      : ((saved.approval as ApprovalMode | undefined) ?? config.approval);
   await validateProjectRoot(config.root);
-  const runtimeId = await resolveRuntimeId(config.runtimeId);
-  const runtime = await ensureRuntime(runtimeId, config.approval);
-  const model = await resolveModel(runtime, config.root, config.model);
+  const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime);
+  const runtime = await ensureRuntime(runtimeId, approval);
+  const model = await resolveModel(runtime, config.root, config.model ?? saved.model);
   const task = await resolveGoal(goal);
   if (!task) throw new Error('Task cannot be empty.');
+  process.stdout.write(renderBanner(sessionTheme, VERSION));
+  bannerShown = true;
   const store = new StateStore(config.root);
   const orchestrator = new RuntimeOrchestrator({
     root: config.root,
@@ -212,6 +281,7 @@ async function run(goal?: string): Promise<void> {
     },
   });
   const state = await orchestrator.run(task);
+  await recordHistory(config.root, task, state, model);
   process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
 
@@ -250,7 +320,13 @@ program
   .command('agents')
   .description('List roles.')
   .action(() => {
-    process.stdout.write(`AGENTS\n------\n${roles.map((role) => role.name).join('\n')}\n`);
+    process.stdout.write(
+      panel(
+        'Agents',
+        roles.map((role) => ` ▸ ${role.name.padEnd(19)} ${role.description}`),
+        currentTheme(),
+      ) + '\n',
+    );
   });
 program
   .command('runtimes')
@@ -263,6 +339,102 @@ program
         `${runtime.name.padEnd(16)} ${result.ready ? 'READY' : result.installed ? 'NOT READY' : 'NOT INSTALLED'}${result.version ? `  ${result.version}` : ''}\n`,
       );
     }
+  });
+program
+  .command('doctor')
+  .description('Diagnose Node.js, project directory, config, and coding runtimes.')
+  .action(async () => {
+    const config = options();
+    const theme = currentTheme();
+    process.stdout.write(renderBanner(theme, VERSION));
+    const checks = await runDoctor(config.root);
+    for (const check of checks) {
+      const badge = check.ok ? theme.success('[ OK ]') : theme.failure('[FAIL]');
+      process.stdout.write(`${badge} ${check.name} — ${check.detail}\n`);
+    }
+    const failures = checks.filter((check) => !check.ok);
+    process.stdout.write(
+      failures.length === 0
+        ? theme.success('\nAll checks passed.\n')
+        : theme.failure(`\n${failures.length} check(s) need attention.\n`),
+    );
+    if (failures.length > 0) process.exitCode = 1;
+  });
+program
+  .command('history')
+  .description('Show recent runs recorded for this project.')
+  .action(async () => {
+    const config = options();
+    const theme = currentTheme();
+    const records = await listRunRecords(config.root);
+    if (records.length === 0) {
+      process.stdout.write('No runs recorded yet.\n');
+      return;
+    }
+    const lines = records.map((record) => {
+      const when = record.finishedAt.slice(0, 19).replace('T', ' ');
+      const duration = record.durationMs === undefined ? '-' : formatDuration(record.durationMs);
+      const goal = record.goal.length > 48 ? `${record.goal.slice(0, 47)}…` : record.goal;
+      return `${statusBadge(record.status, theme)} ${when}  ${duration.padEnd(8)} ${record.runtimeId.padEnd(10)} ${goal}`;
+    });
+    process.stdout.write(panel('Run history', lines, theme) + '\n');
+  });
+program
+  .command('report')
+  .description('Export a Markdown report of the latest persisted run.')
+  .action(async () => {
+    const config = options();
+    const state = await new StateStore(config.root).load();
+    if (!state) throw new Error('No saved workflow.');
+    const file = await writeReport(config.root, state);
+    process.stdout.write(`[ DONE ] Report written to ${file}\n`);
+  });
+program
+  .command('config [args...]')
+  .description('Show or set persistent defaults: runtime, model, approval, theme.')
+  .action(async (args: string[]) => {
+    const root = options().root;
+    const [first] = args;
+    if (first === 'reset') {
+      await resetConfig(root);
+      process.stdout.write('[ DONE ] Config reset.\n');
+      return;
+    }
+    const key = first === 'set' ? args[1] : first;
+    const value = first === 'set' ? args[2] : args[1];
+    if (key === undefined) {
+      const entries = Object.entries(await loadConfig(root));
+      if (entries.length === 0) {
+        process.stdout.write(
+          'No defaults configured. Example: ai-dev-team config set runtime claude\n',
+        );
+        return;
+      }
+      for (const [name, entry] of entries) process.stdout.write(`${name} = ${entry}\n`);
+      return;
+    }
+    if (value === undefined)
+      throw new Error('Usage: ai-dev-team config set <key> <value> | ai-dev-team config reset');
+    await setConfigValue(root, key, value);
+    process.stdout.write(`[ DONE ] ${key} = ${value}\n`);
+  });
+program
+  .command('clean')
+  .description('Delete the persisted .ai-dev-team state directory.')
+  .option('-y, --yes', 'skip the confirmation prompt')
+  .action(async (commandOptions: { yes?: boolean }) => {
+    const config = options();
+    const directory = new StateStore(config.root).directory;
+    if (!commandOptions.yes) {
+      if (!process.stdin.isTTY) throw new Error('Re-run with --yes to clean without a terminal.');
+      const answer = await prompt(`Delete ${directory}? [y/N] `);
+      if (!['y', 'yes'].includes(answer.toLowerCase())) {
+        process.stdout.write('Aborted.\n');
+        return;
+      }
+    }
+    await rm(directory, { recursive: true, force: true });
+    process.stdout.write('[ DONE ] Removed .ai-dev-team state.\n');
   });
 program
   .command('launch')
