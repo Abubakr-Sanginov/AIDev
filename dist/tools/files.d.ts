@@ -1,0 +1,15 @@
+import { z } from 'zod';
+import type { Tool } from './tool.js';
+declare const pathInput: any;
+export declare const readFileTool: Tool<z.infer<typeof pathInput>>;
+declare const writeInput: any;
+export declare const writeFileTool: Tool<z.infer<typeof writeInput>>;
+declare const editInput: any;
+export declare const editFileTool: Tool<z.infer<typeof editInput>>;
+export declare const deleteFileTool: Tool<z.infer<typeof pathInput>>;
+declare const listInput: any;
+export declare const listFilesTool: Tool<z.infer<typeof listInput>>;
+declare const searchInput: any;
+export declare const searchFilesTool: Tool<z.infer<typeof searchInput>>;
+export declare const createDirectoryTool: Tool<z.infer<typeof pathInput>>;
+export {};
