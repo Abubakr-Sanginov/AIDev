@@ -52,16 +52,26 @@ Non-implementing runtime roles use read-only policies where the selected CLI sup
 
 - Node.js 20 or newer
 - npm
+- Git
 - At least one supported coding-agent CLI installed and authenticated for real workflows
 
 The supported real runtimes are Claude Code, OpenCode, and Codex CLI. Runtime authentication remains in each provider's own tooling.
 
 ## Installation
 
-Install the published CLI globally from npm without cloning or downloading the source repository:
+The package is not yet published to the npm registry. Install the latest version directly from GitHub (the build runs automatically through the `prepare` script):
 
 ```text
-npm install -g ai-dev-team
+npm install -g github:Abubakr-Sanginov/AIDev
+```
+
+Or install from a local clone:
+
+```text
+git clone https://github.com/Abubakr-Sanginov/AIDev.git
+cd AIDev
+npm ci
+npm install -g .
 ```
 
 Verify the installation:
@@ -70,16 +80,10 @@ Verify the installation:
 ai-dev-team --help
 ```
 
-To run the CLI without keeping a global installation:
-
-```text
-npx ai-dev-team
-```
-
 Update a global installation:
 
 ```text
-npm update -g ai-dev-team
+npm install -g github:Abubakr-Sanginov/AIDev@main
 ```
 
 Remove a global installation:
@@ -88,7 +92,9 @@ Remove a global installation:
 npm uninstall -g ai-dev-team
 ```
 
-The published package contains the compiled `dist/` output and does not include the `src/` directory. As with other installed JavaScript packages, the package contents remain accessible to the user; excluding `src/` is a packaging choice, not source-code protection or encryption.
+Once the package is published to the npm registry, `npm install -g ai-dev-team` will work as well.
+
+Global installs expose the compiled `dist/` output and do not include the `src/` directory. As with other installed JavaScript packages, the package contents remain accessible to the user; excluding `src/` is a packaging choice, not source-code protection or encryption.
 
 After installation, run `ai-dev-team` from the project you want the agents to modify, or pass its path with `-C`.
 
