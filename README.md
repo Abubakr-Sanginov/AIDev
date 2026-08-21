@@ -59,7 +59,7 @@ The supported real runtimes are Claude Code, OpenCode, and Codex CLI. Runtime au
 
 ## Installation
 
-The package is not yet published to the npm registry. Install the latest version directly from GitHub (the build runs automatically through the `prepare` script):
+The package is not yet published to the npm registry. Install the latest version directly from GitHub — the compiled `dist/` output is committed to the repository, so no build step runs during installation:
 
 ```text
 npm install -g github:Abubakr-Sanginov/AIDev
@@ -204,7 +204,7 @@ npm run build
 npm run format
 ```
 
-The build emits ESM JavaScript to `dist/`. Generated output is intentionally excluded from Git.
+The build emits ESM JavaScript to `dist/`. The compiled `dist/` output is committed to the repository so installs from GitHub work without a build step; after changing `src/`, run `npm run build` and commit the updated `dist/`.
 
 ## Project structure
 

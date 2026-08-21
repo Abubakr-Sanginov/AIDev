@@ -37,7 +37,6 @@
     "format": "prettier --check .",
     "test": "vitest run",
     "dev": "tsx src/cli.ts",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "engines": {
