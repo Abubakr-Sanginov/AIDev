@@ -53,6 +53,10 @@ const BACKEND_SIGNAL =
   /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b/i;
 const FRONTEND_SIGNAL =
   /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b/i;
+const FAIL_VERDICT = /VERDICT:\s*FAIL\b/i;
+const PASS_VERDICT = /VERDICT:\s*PASS\b/i;
+const DEFECT_FINDING = /\b(?:defects?|failures?|errors?|issues?)\s*:\s*(?!none\b|no\b|0\b)/i;
+const NO_DEFECT_FINDING = /\b(?:no\s+(?:reproducible\s+)?defects?|defects?\s*:\s*(?:none|no|0))\b/i;
 
 export class RuntimeOrchestrator {
   readonly #root: string;
@@ -211,7 +215,9 @@ export class RuntimeOrchestrator {
   }
 
   #reportsDefects(output: string): boolean {
-    return /VERDICT:\s*FAIL\b|\bdefect(s)?\b/i.test(output);
+    if (FAIL_VERDICT.test(output)) return true;
+    if (PASS_VERDICT.test(output) || NO_DEFECT_FINDING.test(output)) return false;
+    return DEFECT_FINDING.test(output);
   }
 
   #reviewApproved(output: string): boolean {

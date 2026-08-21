@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { durableWriteFile, type DurableWriteOptions } from './durable-file.js';
 import type { RuntimeWorkflowState } from './runtimes/runtime-orchestrator.js';
+import { roles } from './roles.js';
 
 export class StateStore {
   readonly directory: string;
@@ -32,7 +33,8 @@ export class StateStore {
       JSON.stringify(
         {
           goal: state.goal,
-          roles: ['manager', 'architect', 'coder', 'tester', 'fixer', 'reviewer'],
+          roles: roles.map((role) => role.id),
+          scheduledRoles: scheduledRoles(state),
         },
         null,
         2,
@@ -59,4 +61,11 @@ export class StateStore {
   async #atomic(file: string, content: string): Promise<void> {
     await durableWriteFile(path.join(this.directory, file), content, this.#writeOptions);
   }
+}
+
+function scheduledRoles(state: RuntimeWorkflowState): string[] {
+  const terminal = new Set(['DONE', 'FAILED', 'SKIPPED', 'CANCELLED']);
+  return roles
+    .map((role) => role.id)
+    .filter((roleId) => state.events.some((event) => event.roleId === roleId && terminal.has(event.status)));
 }

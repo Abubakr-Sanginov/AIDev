@@ -159,6 +159,17 @@ describe('runtime orchestration', () => {
     ]);
   });
 
+  it('does not treat "no defects" as a failed tester report', async () => {
+    const runtime = new RecordingRuntime({
+      coder: [{ kind: 'success', output: 'done' }],
+      tester: [{ kind: 'success', output: 'Checks complete. Defects: none.' }],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({ root: '.', runtime }).run('Write a haiku');
+    expect(state.status).toBe('DONE');
+    expect(runtime.launchedRoleIds).not.toContain('fixer');
+  });
+
   it('enforces read-only tool policy on non-implementing roles', async () => {
     const runtime = new RecordingRuntime({ coder: [{ kind: 'success', output: 'done' }] });
     await new RuntimeOrchestrator({ root: '.', runtime }).run('Write a haiku about rain');
