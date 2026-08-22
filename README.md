@@ -74,6 +74,17 @@ npm ci
 npm install -g .
 ```
 
+Or run directly from a clone without a global installation:
+
+```text
+git clone https://github.com/Abubakr-Sanginov/AIDev.git
+cd AIDev
+npm ci
+node dist/cli.js --help
+```
+
+On Windows, the `ai-dev-team.cmd` launcher in the repository root does the same: `ai-dev-team.cmd --help`. Add the clone directory to `PATH` to call `ai-dev-team` from any project folder.
+
 Verify the installation:
 
 ```text
