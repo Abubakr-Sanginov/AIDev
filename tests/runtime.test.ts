@@ -29,7 +29,7 @@ describe('runtime architecture', () => {
       { behavior: 'success', output: 'plan' },
       { behavior: 'success', output: 'architecture' },
       { behavior: 'success', output: 'implementation' },
-      { behavior: 'failure', output: 'VERDICT: FAIL' },
+      { behavior: 'success', output: 'VERDICT: FAIL' },
       { behavior: 'success', output: 'fixed' },
       { behavior: 'success', output: 'VERDICT: PASS' },
       { behavior: 'success', output: 'VERDICT: PASS' },
@@ -139,7 +139,7 @@ describe('runtime architecture', () => {
     expect(
       state.events.some((event) => event.roleId === 'reviewer' && event.status === 'SKIPPED'),
     ).toBe(true);
-    expect(state.events.some((event) => event.message === 'Runtime timed out after 5ms.')).toBe(
+    expect(state.events.some((event) => event.message.includes('Runtime timed out after 5ms.'))).toBe(
       true,
     );
     expect(state.events.some((event) => event.status === 'RETRYING')).toBe(true);

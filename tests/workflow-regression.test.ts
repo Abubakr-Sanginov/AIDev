@@ -105,6 +105,8 @@ describe('runtime workflow regressions', () => {
         'manager',
         'architect',
         'coder',
+        'coder',
+        'coder',
         'tester',
         'fixer',
         'tester',

@@ -48,11 +48,11 @@ export function workflowProgress(state: RuntimeWorkflowState): {
   return { completed: state.completedPhases ?? 0, total: state.totalPhases ?? 5 };
 }
 
-const FULL_STACK_SIGNAL = /full-?stack/i;
+const FULL_STACK_SIGNAL = /full-?stack|фулл?-?стек|полный\s+стек/i;
 const BACKEND_SIGNAL =
-  /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b/i;
+  /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b|\bbot\b|бэкенд|бекенд|сервер|база\s+данных|микросервис/i;
 const FRONTEND_SIGNAL =
-  /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b/i;
+  /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b|website|web-?site|landing|portfolio|pages?\b|blog|e-?commerce|портфолио|сайт|лендинг|страниц|интерфейс|магазин|блог|витрин|фронтенд/i;
 const FAIL_VERDICT = /VERDICT:\s*FAIL\b/i;
 const PASS_VERDICT = /VERDICT:\s*PASS\b/i;
 const DEFECT_FINDING = /\b(?:defects?|failures?|errors?|issues?)\s*:\s*(?!none\b|no\b|0\b)/i;
@@ -118,6 +118,13 @@ export class RuntimeOrchestrator {
       );
     }
     const initialProjectArtifacts = await this.#projectArtifacts();
+    const verifyArtifacts =
+      initialProjectArtifacts === 0
+        ? async (): Promise<string | undefined> =>
+            (await this.#projectArtifacts()) === 0
+              ? `No project artifacts exist in target directory ${this.#root}; the implementation role cannot be considered complete.`
+              : undefined
+        : undefined;
     artifacts.manager = await this.#safeExecute(
       'manager',
       `Target project directory: ${this.#root}\nexistingProject: ${projectContext.existingProject}\n${projectSummary}\n\nCustomer request:\n${goal}`,
@@ -136,15 +143,13 @@ export class RuntimeOrchestrator {
         this.#artifactHandoff(goal, artifacts, projectSummary),
         state,
         `${roleId} failed; continue independent work and report the gap.`,
+        verifyArtifacts,
       );
     let missingArtifacts = initialProjectArtifacts === 0 && (await this.#projectArtifacts()) === 0;
     if (missingArtifacts) {
       artifacts.artifactVerification =
         `VERDICT: FAIL - no project artifacts exist in target directory ${this.#root}. ` +
         'The implementation role cannot be considered complete.';
-      for (const roleId of implementationRoles) {
-        this.#event(state, roleId, 'FAILED', artifacts.artifactVerification);
-      }
       await this.#publish(state);
     }
     artifacts.tester = await this.#safeExecute(
@@ -233,6 +238,7 @@ export class RuntimeOrchestrator {
     prompt: string,
     state: RuntimeWorkflowState,
     fallback: string,
+    verify?: () => Promise<string | undefined>,
   ): Promise<string> {
     let diagnostic = 'Unknown runtime failure';
     for (let attempt = 1; attempt <= this.#maxAgentAttempts; attempt += 1) {
@@ -241,7 +247,8 @@ export class RuntimeOrchestrator {
           attempt === 1
             ? ''
             : `\n\nRetry diagnostic: attempt ${attempt}/${this.#maxAgentAttempts}. Previous failure: ${diagnostic}. Resume the same ${roleId} stage; do not skip prerequisites.`;
-        return (await this.#execute(roleId, prompt + diagnosticContext, state, attempt)).output;
+        return (await this.#execute(roleId, prompt + diagnosticContext, state, attempt, verify))
+          .output;
       } catch (error) {
         diagnostic = error instanceof Error ? error.message : String(error);
         if (attempt === this.#maxAgentAttempts) break;
@@ -328,6 +335,7 @@ export class RuntimeOrchestrator {
     context: string,
     state: RuntimeWorkflowState,
     attempt = 1,
+    verify?: () => Promise<string | undefined>,
   ): Promise<RuntimeResult> {
     const role = getRole(roleId);
     const session = await this.#runtime.launch({
@@ -375,11 +383,13 @@ export class RuntimeOrchestrator {
       });
       acceptingActivity = false;
       clearInterval(heartbeat);
-      if (!result.success) {
-        session.status = 'failed';
-        this.#event(state, roleId, 'FAILED', result.output);
-        await this.#publish(state);
-        return result;
+      if (!result.success)
+        throw new Error(
+          result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`,
+        );
+      if (verify !== undefined) {
+        const problem = await verify();
+        if (problem !== undefined) throw new Error(problem);
       }
       this.#event(state, roleId, 'DONE', result.output);
       state.completedPhases = new Set(
@@ -398,9 +408,6 @@ export class RuntimeOrchestrator {
         // Preserve the execution error; stop is best-effort cleanup.
       }
       session.status = 'failed';
-      this.#event(state, roleId, 'FAILED', error instanceof Error ? error.message : String(error));
-      delete state.currentRoleId;
-      await this.#publish(state);
       throw error;
     }
   }

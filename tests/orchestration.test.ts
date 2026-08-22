@@ -144,6 +144,27 @@ describe('runtime orchestration', () => {
     ).toBe(true);
   });
 
+  it('routes portfolio and website goals to the frontend implementer', async () => {
+    const runtime = new RecordingRuntime({
+      frontend: [{ kind: 'success', output: 'ui' }],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({ root: '.', runtime }).run(
+      'Сделай сайт-портфолио',
+    );
+    expect(state.status).toBe('DONE');
+    expect(runtime.launchedRoleIds).toEqual([
+      'manager',
+      'architect',
+      'frontend',
+      'tester',
+      'reviewer',
+    ]);
+    expect(
+      state.events.some((event) => event.roleId === 'backend' && event.status === 'SKIPPED'),
+    ).toBe(true);
+  });
+
   it('falls back to a general coder without a stack signal', async () => {
     const runtime = new RecordingRuntime({ coder: [{ kind: 'success', output: 'done' }] });
     const state = await new RuntimeOrchestrator({ root: '.', runtime }).run(
@@ -209,7 +230,7 @@ describe('runtime orchestration', () => {
     const runtime = new RecordingRuntime({
       backend: [{ kind: 'success', output: 'api' }],
       tester: [
-        { kind: 'failure', output: 'VERDICT: FAIL' },
+        { kind: 'success', output: 'VERDICT: FAIL' },
         { kind: 'success', output: 'VERDICT: PASS' },
       ],
       fixer: [{ kind: 'success', output: 'fixed' }],
@@ -232,7 +253,7 @@ describe('runtime orchestration', () => {
   it('caps fix attempts at maxFixAttempts when defects persist', async () => {
     const runtime = new RecordingRuntime({
       backend: [{ kind: 'success', output: 'api' }],
-      tester: [{ kind: 'failure', output: 'VERDICT: FAIL' }],
+      tester: [{ kind: 'success', output: 'VERDICT: FAIL' }],
       fixer: [{ kind: 'success', output: 'fixed' }],
       reviewer: [{ kind: 'success', output: 'CHANGES_REQUIRED' }],
     });
@@ -242,6 +263,43 @@ describe('runtime orchestration', () => {
     expect(state.attempts).toBe(2);
     expect(runtime.launchedRoleIds.filter((roleId) => roleId === 'tester')).toHaveLength(3);
     expect(state.status).toBe('FAILED');
+  });
+
+  it('marks a role FAILED only after every attempt is exhausted', async () => {
+    const runtime = new RecordingRuntime({
+      coder: [
+        { kind: 'failure', output: 'write failed' },
+        { kind: 'failure', output: 'write failed' },
+        { kind: 'success', output: 'implemented' },
+      ],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({ root: '.', runtime, retryBackoffMs: 0 }).run(
+      'Write a haiku about rain',
+    );
+    const coderEvents = state.events.filter((event) => event.roleId === 'coder');
+    expect(coderEvents.some((event) => event.status === 'FAILED')).toBe(false);
+    expect(coderEvents.filter((event) => event.status === 'RETRYING')).toHaveLength(2);
+    expect(coderEvents.at(-1)?.status).toBe('DONE');
+    expect(runtime.launchedRoleIds.filter((roleId) => roleId === 'coder')).toHaveLength(3);
+    expect(state.status).toBe('DONE');
+  });
+
+  it('emits a single FAILED event at the end when all attempts fail', async () => {
+    const runtime = new RecordingRuntime({
+      coder: [{ kind: 'failure', output: 'nope' }],
+    });
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      maxAgentAttempts: 2,
+      retryBackoffMs: 0,
+    }).run('Write a haiku about rain');
+    const coderEvents = state.events.filter((event) => event.roleId === 'coder');
+    const failed = coderEvents.filter((event) => event.status === 'FAILED');
+    expect(failed).toHaveLength(1);
+    expect(coderEvents.at(-1)?.status).toBe('FAILED');
+    expect(failed[0]?.message).toMatch(/Retry limit exhausted/);
   });
 
   it('keeps the manager read-only through a real Codex adapter', async () => {
