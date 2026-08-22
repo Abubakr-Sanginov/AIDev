@@ -59,7 +59,13 @@ The supported real runtimes are Claude Code, OpenCode, and Codex CLI. Runtime au
 
 ## Installation
 
-The package is not yet published to the npm registry. Install the latest version directly from GitHub — the compiled `dist/` output is committed to the repository, so no build step runs during installation:
+Install the published CLI globally from npm:
+
+```text
+npm install -g ai-dev-team
+```
+
+Alternatively, install the latest development version directly from GitHub — the compiled `dist/` output is committed to the repository, so no build step runs during installation:
 
 ```text
 npm install -g github:Abubakr-Sanginov/AIDev
@@ -94,7 +100,7 @@ ai-dev-team --help
 Update a global installation:
 
 ```text
-npm install -g github:Abubakr-Sanginov/AIDev@main
+npm update -g ai-dev-team
 ```
 
 Remove a global installation:
@@ -103,17 +109,29 @@ Remove a global installation:
 npm uninstall -g ai-dev-team
 ```
 
-Once the package is published to the npm registry, `npm install -g ai-dev-team` will work as well.
-
 Global installs expose the compiled `dist/` output and do not include the `src/` directory. As with other installed JavaScript packages, the package contents remain accessible to the user; excluding `src/` is a packaging choice, not source-code protection or encryption.
 
 After installation, run `ai-dev-team` from the project you want the agents to modify, or pass its path with `-C`.
+
+## Publishing
+
+Releases are published to the npm registry from a local checkout:
+
+```text
+git pull
+npm install
+npm publish
+```
+
+`npm install` keeps `package-lock.json` in sync with `package.json` and must be run (and the result committed) whenever dependency metadata changes. The `prepublishOnly` hook rebuilds `dist/` before publish. An npm account with publish rights and `npm login` are required; with 2FA enabled, pass the code via `--otp`.
 
 ## Configuration
 
 AI Development Team has no required project `.env` file. Authenticate supported coding-agent CLIs using their official login or configuration flow. Do not place provider credentials in this repository.
 
 Library consumers who instantiate `AnthropicProvider` directly may copy `.env.example` and supply `ANTHROPIC_API_KEY` through their own environment-loading mechanism. The CLI does not load `.env` automatically, and the example contains no real credential.
+
+`zod` and `@anthropic-ai/sdk` are optional peer dependencies: they are required only by the library-level `AnthropicProvider` and the agent tool layer, not by the CLI. Library consumers install them explicitly: `npm install zod @anthropic-ai/sdk`.
 
 Common options include:
 
