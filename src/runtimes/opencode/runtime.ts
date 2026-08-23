@@ -141,11 +141,12 @@ export function parseOpenCodeJsonEvents(stdout: string): OpenCodeJsonResult {
 }
 
 export function buildOpenCodeRunArgs(request: AgentRequest): string[] {
+  // The prompt itself is piped through stdin (see execute): Windows cmd.exe
+  // shims reject command lines longer than 8191 characters.
   const args = ['run', '--format', 'json'];
   if (request.toolPolicy === 'coding') args.push('--agent', 'build', '--auto');
   if (request.model) args.push('--model', request.model);
   if (request.resumeSessionId) args.push('--session', request.resumeSessionId);
-  args.push(request.prompt);
   return args;
 }
 
@@ -342,6 +343,7 @@ export class OpenCodeRuntime implements CodingRuntime {
           const meaningful = this.#activityText(text);
           if (meaningful) await request.onActivity?.({ type: 'output', message: meaningful });
         },
+        effectiveRequest.prompt,
       );
       if (session.outputFile) {
         await appendFile(

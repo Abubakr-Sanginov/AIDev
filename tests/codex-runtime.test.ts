@@ -27,7 +27,6 @@ it('builds Codex JSON execution and exact resume arguments', () => {
     'never',
     '--sandbox',
     'workspace-write',
-    'work',
   ]);
   expect(buildCodexExecArgs({ prompt: 'continue', resumeSessionId: 'thread-1' })).toEqual([
     'exec',
@@ -36,7 +35,6 @@ it('builds Codex JSON execution and exact resume arguments', () => {
     '--color',
     'never',
     'thread-1',
-    'continue',
   ]);
   expect(buildCodexExecArgs({ prompt: 'audit', toolPolicy: 'read-only' })).toEqual([
     'exec',
@@ -45,7 +43,6 @@ it('builds Codex JSON execution and exact resume arguments', () => {
     'never',
     '--sandbox',
     'read-only',
-    'audit',
   ]);
 });
 

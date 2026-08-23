@@ -41,6 +41,36 @@ describe('runProcess', () => {
       process.env.PATH = originalPath;
     }
   });
+
+  it('pipes large stdin payloads that would overflow the Windows command line', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'process-stdin-'));
+    directories.push(directory);
+    const command = `stdin-shim-${process.pid}`;
+    const payload = 'prompt-'.repeat(20_000); // 140k chars, far beyond the cmd.exe 8191 limit
+    const script =
+      "let d='';process.stdin.on('data',(c)=>d+=c).on('end',()=>process.stdout.write(String(d.length)))";
+
+    if (process.platform === 'win32') {
+      await writeFile(
+        path.join(directory, `${command}.cmd`),
+        `@echo off\r\nnode -e "${script}"\r\n`,
+      );
+    } else {
+      const shim = path.join(directory, command);
+      await writeFile(shim, `#!/bin/sh\nnode -e "${script}"\n`);
+      await chmod(shim, 0o755);
+    }
+
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${directory}${path.delimiter}${originalPath ?? ''}`;
+    try {
+      await expect(
+        runProcess(command, [], directory, undefined, undefined, payload),
+      ).resolves.toEqual({ code: 0, stdout: String(payload.length), stderr: '' });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
 });
 
 describe('decodeConsoleText', () => {

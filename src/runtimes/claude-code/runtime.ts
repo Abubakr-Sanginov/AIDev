@@ -139,7 +139,9 @@ export class ClaudeCodeRuntime implements CodingRuntime {
   }
   async execute(session: RuntimeSession, request: AgentRequest): Promise<RuntimeResult> {
     session.status = 'running';
-    const args = ['-p', request.prompt, '--output-format', 'json'];
+    // The prompt is piped through stdin: Windows cmd.exe shims reject command
+    // lines longer than 8191 characters, and orchestrated prompts exceed that.
+    const args = ['-p', '--output-format', 'json'];
     if (request.model) args.push('--model', request.model);
     if (request.resumeSessionId) args.push('--resume', request.resumeSessionId);
     if (request.toolPolicy === 'read-only')
@@ -167,6 +169,7 @@ export class ClaudeCodeRuntime implements CodingRuntime {
             message: line.trim().slice(0, 160),
           });
       },
+      request.prompt,
     );
     if (session.outputFile)
       await appendFile(

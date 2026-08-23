@@ -25,18 +25,11 @@ interface CodexEvent {
 }
 
 export function buildCodexExecArgs(request: AgentRequest): string[] {
+  // The prompt itself is piped through stdin (see execute): Windows cmd.exe
+  // shims reject command lines longer than 8191 characters.
   const modelArgs = request.model ? ['--model', request.model] : [];
   if (request.resumeSessionId)
-    return [
-      'exec',
-      'resume',
-      '--json',
-      '--color',
-      'never',
-      ...modelArgs,
-      request.resumeSessionId,
-      request.prompt,
-    ];
+    return ['exec', 'resume', '--json', '--color', 'never', ...modelArgs, request.resumeSessionId];
   return [
     'exec',
     '--json',
@@ -45,7 +38,6 @@ export function buildCodexExecArgs(request: AgentRequest): string[] {
     '--sandbox',
     request.toolPolicy === 'read-only' ? 'read-only' : 'workspace-write',
     ...modelArgs,
-    request.prompt,
   ];
 }
 
@@ -203,6 +195,7 @@ export class CodexRuntime implements CodingRuntime {
         if (line)
           await request.onActivity?.({ type: 'output', message: line.trim().slice(0, 160) });
       },
+      effective.prompt,
     );
     if (session.outputFile)
       await appendFile(

@@ -64,7 +64,7 @@ describe('ClaudeCodeRuntime', () => {
     });
   });
 
-  it('passes prompts as an argument without shell interpretation', async () => {
+  it('pipes the prompt through stdin without shell interpretation', async () => {
     const run = runner(async () => ({
       code: 0,
       stdout: JSON.stringify({ result: 'done', session_id: 'session-1' }),
@@ -78,10 +78,11 @@ describe('ClaudeCodeRuntime', () => {
 
     expect(run).toHaveBeenCalledWith(
       'claude',
-      ['-p', prompt, '--output-format', 'json'],
+      ['-p', '--output-format', 'json'],
       'C:\\work',
       undefined,
       expect.any(Function),
+      prompt,
     );
   });
 
@@ -98,17 +99,11 @@ describe('ClaudeCodeRuntime', () => {
 
     expect(run).toHaveBeenCalledWith(
       'claude',
-      [
-        '-p',
-        'audit',
-        '--output-format',
-        'json',
-        '--disallowedTools',
-        'Bash, Edit, Write, MultiEdit, NotebookEdit',
-      ],
+      ['-p', '--output-format', 'json', '--disallowedTools', 'Bash, Edit, Write, MultiEdit, NotebookEdit'],
       'C:\\work',
       undefined,
       expect.any(Function),
+      'audit',
     );
   });
 });

@@ -52,28 +52,14 @@ describe('OpenCodeRuntime', () => {
   });
 
   it('constructs official run, model, and exact session arguments', () => {
-    expect(buildOpenCodeRunArgs({ prompt: 'Do the work' })).toEqual([
-      'run',
-      '--format',
-      'json',
-      'Do the work',
-    ]);
+    expect(buildOpenCodeRunArgs({ prompt: 'Do the work' })).toEqual(['run', '--format', 'json']);
     expect(
       buildOpenCodeRunArgs({
         prompt: 'Continue',
         resumeSessionId: 'ses_123',
         model: 'provider/model',
       }),
-    ).toEqual([
-      'run',
-      '--format',
-      'json',
-      '--model',
-      'provider/model',
-      '--session',
-      'ses_123',
-      'Continue',
-    ]);
+    ).toEqual(['run', '--format', 'json', '--model', 'provider/model', '--session', 'ses_123']);
   });
 
   it('runs coding roles on the full-access build agent with auto-approved permissions', () => {
@@ -84,13 +70,11 @@ describe('OpenCodeRuntime', () => {
       '--agent',
       'build',
       '--auto',
-      'Implement it',
     ]);
     expect(buildOpenCodeRunArgs({ prompt: 'Audit it', toolPolicy: 'read-only' })).toEqual([
       'run',
       '--format',
       'json',
-      'Audit it',
     ]);
   });
 
@@ -164,10 +148,11 @@ describe('OpenCodeRuntime', () => {
     await runtime.execute(session, { prompt: 'Second' });
     expect(run).toHaveBeenLastCalledWith(
       'opencode',
-      ['run', '--format', 'json', '--session', 'ses_abc', 'Second'],
+      ['run', '--format', 'json', '--session', 'ses_abc'],
       '.',
       undefined,
       expect.any(Function),
+      'Second',
     );
   });
 
@@ -186,10 +171,11 @@ describe('OpenCodeRuntime', () => {
     expect(process.env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(run).toHaveBeenCalledWith(
       'opencode',
-      ['run', '--format', 'json', 'Audit codewise'],
+      ['run', '--format', 'json'],
       '.',
       undefined,
       expect.any(Function),
+      'Audit codewise',
     );
   });
 
@@ -208,10 +194,11 @@ describe('OpenCodeRuntime', () => {
     expect(process.env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
     expect(run).toHaveBeenCalledWith(
       'opencode',
-      ['run', '--format', 'json', '--agent', 'build', '--auto', 'Build feature'],
+      ['run', '--format', 'json', '--agent', 'build', '--auto'],
       '.',
       undefined,
       expect.any(Function),
+      'Build feature',
     );
   });
 

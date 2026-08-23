@@ -18,6 +18,7 @@ export type ProcessRunner = (
   cwd: string,
   timeoutMs?: number,
   onActivity?: ProcessActivityHandler,
+  stdinText?: string,
 ) => Promise<ProcessResult>;
 
 const REPLACEMENT_CHAR = '\uFFFD';
@@ -87,6 +88,7 @@ export function runProcess(
   cwd: string,
   timeoutMs?: number,
   onActivity?: ProcessActivityHandler,
+  stdinText?: string,
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, shell: false, windowsHide: true, env: process.env });
@@ -96,7 +98,11 @@ export function runProcess(
     });
     let stdout = '';
     let stderr = '';
-    child.stdin?.end();
+    // Prompt-sized payloads travel through stdin, not argv: Windows cmd.exe
+    // shims reject command lines longer than 8191 characters, and orchestrated
+    // prompts with skills and artifacts routinely exceed that limit.
+    if (stdinText === undefined) child.stdin?.end();
+    else child.stdin?.end(stdinText, 'utf8');
     const stdoutDecoder = createConsoleDecoder();
     const stderrDecoder = createConsoleDecoder();
     const append = (current: string, text: string): string => (current + text).slice(-200_000);
