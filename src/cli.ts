@@ -154,8 +154,6 @@ async function resolveModel(
   return selected === 'auto' ? undefined : selected;
 }
 
-let rendered = false;
-let bannerShown = false;
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
 export function renderRuntimeState(
   state: RuntimeWorkflowState,
@@ -189,17 +187,35 @@ export function renderRuntimeState(
   }
   return lines.join('\n') + '\n';
 }
-function render(state: RuntimeWorkflowState): void {
+
+let live = false;
+
+function frame(state: RuntimeWorkflowState): string {
   const config = options();
   const theme = currentTheme();
-  if (process.stdout.isTTY && rendered) process.stdout.write('\x1B[H\x1B[2J');
-  const showBanner = Boolean(process.stdout.isTTY) || !bannerShown;
-  rendered = true;
-  bannerShown = true;
-  process.stdout.write(
-    `${showBanner ? renderBanner(theme, VERSION) : ''}${renderDashboard(state, config.root, theme, { verbose: config.verbose })}\n`,
-  );
+  return `${renderBanner(theme, VERSION)}${renderDashboard(state, config.root, theme, { verbose: config.verbose })}\n`;
 }
+
+// The live dashboard redraws in place on the alternate screen buffer (like
+// htop): updates never accumulate in the scrollback, and the terminal content
+// from before the run is restored when the run ends.
+function render(state: RuntimeWorkflowState): void {
+  if (!process.stdout.isTTY) return; // the final frame is printed once after the run
+  if (!live) {
+    process.stdout.write('\x1B[?1049h\x1B[?25l');
+    live = true;
+  }
+  process.stdout.write(`\x1B[H${frame(state)}\x1B[0J`);
+}
+
+function stopLive(): void {
+  if (!live) return;
+  live = false;
+  process.stdout.write('\x1B[?25h\x1B[?1049l');
+}
+
+process.on('exit', stopLive);
+
 async function ensureRuntime(runtimeId: string, approval: ApprovalMode) {
   const runtime = createDefaultRegistry().get(runtimeId);
   let detection = await runtime.detect();
@@ -263,7 +279,6 @@ async function run(goal?: string): Promise<void> {
   const task = await resolveGoal(goal);
   if (!task) throw new Error('Task cannot be empty.');
   process.stdout.write(renderBanner(sessionTheme, VERSION));
-  bannerShown = true;
   const store = new StateStore(config.root);
   const orchestrator = new RuntimeOrchestrator({
     root: config.root,
@@ -283,7 +298,14 @@ async function run(goal?: string): Promise<void> {
       );
     },
   });
-  const state = await orchestrator.run(task);
+  let state: RuntimeWorkflowState;
+  try {
+    state = await orchestrator.run(task);
+  } finally {
+    stopLive();
+  }
+  // Leave one final frame in the normal buffer as the persistent run record.
+  process.stdout.write(frame(state));
   await recordHistory(config.root, task, state, model);
   process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
@@ -317,7 +339,7 @@ program
   .action(async () => {
     const state = await new StateStore(options().root).load();
     if (!state) throw new Error('No saved workflow.');
-    render(state);
+    process.stdout.write(frame(state));
   });
 program
   .command('agents')

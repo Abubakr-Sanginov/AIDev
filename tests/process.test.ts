@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runProcess } from '../src/runtimes/process.js';
+import { decodeConsoleText, runProcess } from '../src/runtimes/process.js';
 
 const directories: string[] = [];
 afterEach(async () =>
@@ -40,5 +40,14 @@ describe('runProcess', () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+});
+
+describe('decodeConsoleText', () => {
+  it('keeps UTF-8 output and repairs Windows OEM (CP866) localized output', () => {
+    expect(decodeConsoleText(Buffer.from('Привет, мир!', 'utf8'))).toBe('Привет, мир!');
+    // 'Ошибка' encoded in CP866, the OEM code page used by Russian Windows consoles.
+    const oem = Buffer.from([0x8e, 0xe8, 0xa8, 0xa1, 0xaa, 0xa0]);
+    expect(decodeConsoleText(oem)).toBe('Ошибка');
   });
 });

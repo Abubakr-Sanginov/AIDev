@@ -88,7 +88,11 @@ describe('existing project workflow', () => {
     expect(await readFile(path.join(root, 'src/counter.ts'), 'utf8')).toContain(
       'return value + 1;',
     );
-    expect((await readdir(root)).sort()).toEqual(before);
+    // The orchestrator publishes bundled skills into .ai-dev-team/skills; every
+    // other top-level entry must stay untouched (updates happen in place).
+    expect(await readdir(path.join(root, '.ai-dev-team', 'skills'))).toContain('tdd.md');
+    const after = (await readdir(root)).filter((entry) => entry !== '.ai-dev-team');
+    expect(after.sort()).toEqual(before);
   });
   it('keeps empty creation flow and rejects an invalid root before Manager', async () => {
     const root = await temp('aidev-empty-');
