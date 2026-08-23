@@ -28,7 +28,7 @@ import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 
 const program = new Command();
 program
