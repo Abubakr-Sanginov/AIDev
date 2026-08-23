@@ -27,6 +27,7 @@
   "exports": "./dist/index.js",
   "files": [
     "dist",
+    "skills",
     "README.md",
     "LICENSE"
   ],

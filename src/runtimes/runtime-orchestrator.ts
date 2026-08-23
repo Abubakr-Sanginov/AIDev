@@ -2,6 +2,7 @@ import { readdir } from 'node:fs/promises';
 import type { CodingRuntime, RuntimeResult, RuntimeSession } from './runtime.js';
 import { getRole, isReadOnlyRole, roles } from '../roles.js';
 import { formatProjectContext, inspectProject, type ProjectContext } from '../project-context.js';
+import { formatSkillsForPrompt, writeSkillsToProject } from '../skills.js';
 
 export type RuntimeWorkflowEventStatus =
   'RUNNING' | 'ACTIVE' | 'RETRYING' | 'DONE' | 'FAILED' | 'SKIPPED' | 'CANCELLED';
@@ -127,6 +128,9 @@ export class RuntimeOrchestrator {
               ? `No project artifacts exist in target directory ${this.#root}; the implementation role cannot be considered complete.`
               : undefined
         : undefined;
+    // Publish the bundled skills into the project so every role (and the user)
+    // can consult them; prompt injection below is the primary channel.
+    await writeSkillsToProject(this.#root);
     artifacts.manager = await this.#safeExecute(
       'manager',
       `Target project directory: ${this.#root}\nexistingProject: ${projectContext.existingProject}\n${projectSummary}\n\nCustomer request:\n${goal}`,
@@ -371,8 +375,9 @@ export class RuntimeOrchestrator {
     }, this.#heartbeatMs);
     let acceptingActivity = true;
     try {
+      const skillsBlock = await formatSkillsForPrompt(roleId);
       const result = await this.#runtime.execute(session, {
-        prompt: `${role.systemPrompt}\n\nExecution budget: ${role.budget.maxSteps} steps and ${role.budget.maxToolCalls} tool calls.\n${context}`,
+        prompt: `${role.systemPrompt}\n\n${skillsBlock}Execution budget: ${role.budget.maxSteps} steps and ${role.budget.maxToolCalls} tool calls.\n${context}`,
         maxSteps: role.budget.maxSteps,
         maxToolCalls: role.budget.maxToolCalls,
         toolPolicy: isReadOnlyRole(roleId) ? 'read-only' : 'coding',
