@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import spawn from 'cross-spawn';
 export function runProcess(command, args, cwd, timeoutMs, onActivity) {
     return new Promise((resolve, reject) => {
@@ -9,15 +10,23 @@ export function runProcess(command, args, cwd, timeoutMs, onActivity) {
         let stdout = '';
         let stderr = '';
         child.stdin?.end();
-        const append = (current, chunk) => (current + chunk.toString('utf8')).slice(-200_000);
+        // Decode with StringDecoder so multibyte characters (e.g. Cyrillic) split
+        // across pipe chunks are not mangled into U+FFFD replacement characters.
+        const stdoutDecoder = new StringDecoder('utf8');
+        const stderrDecoder = new StringDecoder('utf8');
+        const append = (current, text) => (current + text).slice(-200_000);
         child.stdout?.on('data', (chunk) => {
-            const text = chunk.toString('utf8');
-            stdout = append(stdout, chunk);
+            const text = stdoutDecoder.write(chunk);
+            if (text === '')
+                return;
+            stdout = append(stdout, text);
             void onActivity?.({ type: 'stdout', text });
         });
         child.stderr?.on('data', (chunk) => {
-            const text = chunk.toString('utf8');
-            stderr = append(stderr, chunk);
+            const text = stderrDecoder.write(chunk);
+            if (text === '')
+                return;
+            stderr = append(stderr, text);
             void onActivity?.({ type: 'stderr', text });
         });
         let settled = false;
@@ -56,6 +65,8 @@ export function runProcess(command, args, cwd, timeoutMs, onActivity) {
             if (settled || timedOut)
                 return;
             settled = true;
+            stdout = append(stdout, stdoutDecoder.end());
+            stderr = append(stderr, stderrDecoder.end());
             resolve({ code: code ?? -1, stdout, stderr });
         });
     });

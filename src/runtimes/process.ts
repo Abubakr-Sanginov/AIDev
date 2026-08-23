@@ -1,3 +1,4 @@
+import { StringDecoder } from 'node:string_decoder';
 import spawn from 'cross-spawn';
 
 export interface ProcessResult {
@@ -34,16 +35,21 @@ export function runProcess(
     let stdout = '';
     let stderr = '';
     child.stdin?.end();
-    const append = (current: string, chunk: Buffer): string =>
-      (current + chunk.toString('utf8')).slice(-200_000);
+    // Decode with StringDecoder so multibyte characters (e.g. Cyrillic) split
+    // across pipe chunks are not mangled into U+FFFD replacement characters.
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    const append = (current: string, text: string): string => (current + text).slice(-200_000);
     child.stdout?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      stdout = append(stdout, chunk);
+      const text = stdoutDecoder.write(chunk);
+      if (text === '') return;
+      stdout = append(stdout, text);
       void onActivity?.({ type: 'stdout', text });
     });
     child.stderr?.on('data', (chunk: Buffer) => {
-      const text = chunk.toString('utf8');
-      stderr = append(stderr, chunk);
+      const text = stderrDecoder.write(chunk);
+      if (text === '') return;
+      stderr = append(stderr, text);
       void onActivity?.({ type: 'stderr', text });
     });
     let settled = false;
@@ -78,6 +84,8 @@ export function runProcess(
       if (timer !== undefined) clearTimeout(timer);
       if (settled || timedOut) return;
       settled = true;
+      stdout = append(stdout, stdoutDecoder.end());
+      stderr = append(stderr, stderrDecoder.end());
       resolve({ code: code ?? -1, stdout, stderr });
     });
   });
