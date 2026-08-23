@@ -119,6 +119,7 @@ export function parseOpenCodeJsonEvents(stdout: string): OpenCodeJsonResult {
 
 export function buildOpenCodeRunArgs(request: AgentRequest): string[] {
   const args = ['run', '--format', 'json'];
+  if (request.toolPolicy === 'coding') args.push('--agent', 'build', '--auto');
   if (request.model) args.push('--model', request.model);
   if (request.resumeSessionId) args.push('--session', request.resumeSessionId);
   args.push(request.prompt);
@@ -284,18 +285,19 @@ export class OpenCodeRuntime implements CodingRuntime {
       prompt: request.prompt,
       ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
       ...(request.model === undefined ? {} : { model: request.model }),
+      ...(request.toolPolicy === undefined ? {} : { toolPolicy: request.toolPolicy }),
     };
 
-    // Headless runs close stdin, so an interactive "ask" permission prompt could
-    // never be answered and would silently deny the operation. Deny edits and
-    // commands for read-only roles and explicitly allow them for coding roles.
-    const permissionConfig = JSON.stringify(
+    // Headless runs close stdin, and OpenCode auto-rejects every permission
+    // prompt it cannot answer. Coding roles therefore run with --agent build
+    // --auto (see buildOpenCodeRunArgs); read-only roles keep an explicit
+    // deny config so they cannot modify the project.
+    const readOnlyConfig =
       request.toolPolicy === 'read-only'
-        ? { permission: { bash: 'deny', edit: 'deny' } }
-        : { permission: { bash: 'allow', edit: 'allow' } },
-    );
+        ? JSON.stringify({ permission: { bash: 'deny', edit: 'deny' } })
+        : undefined;
     const previousConfig = process.env.OPENCODE_CONFIG_CONTENT;
-    process.env.OPENCODE_CONFIG_CONTENT = permissionConfig;
+    if (readOnlyConfig !== undefined) process.env.OPENCODE_CONFIG_CONTENT = readOnlyConfig;
 
     try {
       const result = await this.#run(
@@ -354,8 +356,10 @@ export class OpenCodeRuntime implements CodingRuntime {
       session.status = 'failed';
       throw new Error(`OpenCode execution failed: ${this.#errorMessage(error)}`, { cause: error });
     } finally {
-      if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG_CONTENT;
-      else process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
+      if (readOnlyConfig !== undefined) {
+        if (previousConfig === undefined) delete process.env.OPENCODE_CONFIG_CONTENT;
+        else process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
+      }
     }
   }
 

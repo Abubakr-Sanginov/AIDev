@@ -75,6 +75,24 @@ describe('OpenCodeRuntime', () => {
     ]);
   });
 
+  it('runs coding roles on the full-access build agent with auto-approved permissions', () => {
+    expect(buildOpenCodeRunArgs({ prompt: 'Implement it', toolPolicy: 'coding' })).toEqual([
+      'run',
+      '--format',
+      'json',
+      '--agent',
+      'build',
+      '--auto',
+      'Implement it',
+    ]);
+    expect(buildOpenCodeRunArgs({ prompt: 'Audit it', toolPolicy: 'read-only' })).toEqual([
+      'run',
+      '--format',
+      'json',
+      'Audit it',
+    ]);
+  });
+
   it('discovers only models reported by the installed OpenCode CLI', async () => {
     const run = runner(async (_command, args) => ({
       code: 0,
@@ -150,6 +168,28 @@ describe('OpenCodeRuntime', () => {
     expect(run).toHaveBeenCalledWith(
       'opencode',
       ['run', '--format', 'json', 'Audit codewise'],
+      '.',
+      undefined,
+      expect.any(Function),
+    );
+  });
+
+  it('does not override the config environment for coding policy runs', async () => {
+    let observed: string | undefined = 'unset-marker';
+    const run = runner(async (_command, _args) => {
+      observed = process.env.OPENCODE_CONFIG_CONTENT;
+      return { code: 0, stdout: '{"type":"text","part":{"text":"done"}}', stderr: '' };
+    });
+    const runtime = new OpenCodeRuntime(new TestTerminal(), run);
+    const session = await runtime.launch({ workingDirectory: '.', roleId: 'coder' });
+
+    await runtime.execute(session, { prompt: 'Build feature', toolPolicy: 'coding' });
+
+    expect(observed).toBeUndefined();
+    expect(process.env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+    expect(run).toHaveBeenCalledWith(
+      'opencode',
+      ['run', '--format', 'json', '--agent', 'build', '--auto', 'Build feature'],
       '.',
       undefined,
       expect.any(Function),
