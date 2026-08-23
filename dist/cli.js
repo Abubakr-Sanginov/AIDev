@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
@@ -14,7 +15,7 @@ import { loadConfig, resetConfig, setConfigValue } from './config.js';
 import { appendRunRecord, listRunRecords } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
-const VERSION = '0.2.3';
+const { version: VERSION } = createRequire(import.meta.url)('../package.json');
 const program = new Command();
 program
     .name('ai-dev-team')
@@ -84,7 +85,8 @@ async function resolveGoal(value) {
     return value?.trim() || prompt('What should the AI development team build? ');
 }
 async function resolveRuntimeId(value) {
-    if (value) return value;
+    if (value)
+        return value;
     if (!process.stdin.isTTY)
         throw new Error('Choose a runtime with --runtime claude, opencode, or codex.');
     return choose('Choose a provider:', [
@@ -244,7 +246,8 @@ program
     .description('Restart the persisted goal.')
     .action(async () => {
     const state = await new StateStore(options().root).load();
-    if (!state) throw new Error('No saved workflow.');
+    if (!state)
+        throw new Error('No saved workflow.');
     await run(state.goal);
 });
 program
@@ -252,7 +255,8 @@ program
     .description('Show persisted status.')
     .action(async () => {
     const state = await new StateStore(options().root).load();
-    if (!state) throw new Error('No saved workflow.');
+    if (!state)
+        throw new Error('No saved workflow.');
     render(state);
 });
 program
@@ -315,7 +319,8 @@ program
     .action(async () => {
     const config = options();
     const state = await new StateStore(config.root).load();
-    if (!state) throw new Error('No saved workflow.');
+    if (!state)
+        throw new Error('No saved workflow.');
     const file = await writeReport(config.root, state);
     process.stdout.write(`[ DONE ] Report written to ${file}\n`);
 });
@@ -385,7 +390,8 @@ program
     .action(async () => {
     const store = new StateStore(options().root);
     const state = await store.load();
-    if (!state) throw new Error('No saved workflow.');
+    if (!state)
+        throw new Error('No saved workflow.');
     state.status = 'FAILED';
     state.events.push({ roleId: 'manager', status: 'FAILED', message: 'Stopped by user.' });
     await store.save(state);
@@ -396,7 +402,8 @@ program
     .description('Show persisted activity.')
     .action(async () => {
     const state = await new StateStore(options().root).load();
-    if (!state) throw new Error('No saved workflow.');
+    if (!state)
+        throw new Error('No saved workflow.');
     for (const event of state.events)
         process.stdout.write(`${event.roleId} [ ${event.status} ] ${event.message}\n`);
 });

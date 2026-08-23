@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
@@ -28,7 +29,9 @@ import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
 
-const VERSION = '0.2.2';
+const { version: VERSION } = createRequire(import.meta.url)('../package.json') as {
+  version: string;
+};
 
 const program = new Command();
 program
@@ -469,7 +472,7 @@ program
     if (!state) throw new Error('No saved workflow.');
     for (const event of state.events)
       process.stdout.write(`${event.roleId} [ ${event.status} ] ${event.message}\n`);
-});
+  });
 program.parseAsync().catch((error: unknown) => {
   process.stderr.write(`[ FAILED ] ${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
