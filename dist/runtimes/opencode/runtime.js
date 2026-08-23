@@ -222,12 +222,14 @@ export class OpenCodeRuntime {
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
             ...(request.model === undefined ? {} : { model: request.model }),
         };
-        const readOnlyConfig = request.toolPolicy === 'read-only'
-            ? JSON.stringify({ permission: { bash: 'deny', edit: 'deny' } })
-            : undefined;
+        // Headless runs close stdin, so an interactive "ask" permission prompt could
+        // never be answered and would silently deny the operation. Deny edits and
+        // commands for read-only roles and explicitly allow them for coding roles.
+        const permissionConfig = JSON.stringify(request.toolPolicy === 'read-only'
+            ? { permission: { bash: 'deny', edit: 'deny' } }
+            : { permission: { bash: 'allow', edit: 'allow' } });
         const previousConfig = process.env.OPENCODE_CONFIG_CONTENT;
-        if (readOnlyConfig !== undefined)
-            process.env.OPENCODE_CONFIG_CONTENT = readOnlyConfig;
+        process.env.OPENCODE_CONFIG_CONTENT = permissionConfig;
         try {
             const result = await this.#run('opencode', buildOpenCodeRunArgs(effectiveRequest), session.workingDirectory, undefined, async (activity) => {
                 if (activity.type === 'started') {
@@ -280,12 +282,10 @@ export class OpenCodeRuntime {
             throw new Error(`OpenCode execution failed: ${this.#errorMessage(error)}`, { cause: error });
         }
         finally {
-            if (readOnlyConfig !== undefined) {
-                if (previousConfig === undefined)
-                    delete process.env.OPENCODE_CONFIG_CONTENT;
-                else
-                    process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
-            }
+            if (previousConfig === undefined)
+                delete process.env.OPENCODE_CONFIG_CONTENT;
+            else
+                process.env.OPENCODE_CONFIG_CONTENT = previousConfig;
         }
     }
     async pause(session) {

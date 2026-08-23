@@ -248,8 +248,10 @@ export class RuntimeOrchestrator {
                 throw new Error(result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`);
             if (verify !== undefined) {
                 const problem = await verify();
-                if (problem !== undefined)
-                    throw new Error(problem);
+                if (problem !== undefined) {
+                    const reply = result.output.trim().replaceAll(/\s+/gu, ' ');
+                    throw new Error(reply === '' ? problem : `${problem} Agent reply: ${reply.slice(0, 400)}`);
+                }
             }
             this.#event(state, roleId, 'DONE', result.output);
             state.completedPhases = new Set(state.events
