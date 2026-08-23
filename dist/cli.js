@@ -14,7 +14,7 @@ import { loadConfig, resetConfig, setConfigValue } from './config.js';
 import { appendRunRecord, listRunRecords } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const program = new Command();
 program
     .name('ai-dev-team')
