@@ -7,6 +7,7 @@ export function workflowProgress(state) {
 const FULL_STACK_SIGNAL = /full-?stack|фулл?-?стек|полный\s+стек/i;
 const BACKEND_SIGNAL = /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b|\bbot\b|бэкенд|бекенд|сервер|база\s+данных|микросервис/i;
 const FRONTEND_SIGNAL = /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b|website|web-?site|landing|portfolio|pages?\b|blog|e-?commerce|портфолио|сайт|лендинг|страниц|интерфейс|магазин|блог|витрин|фронтенд/i;
+const IMPLEMENTATION_DIRECTIVE = '\n\nYou MUST create or modify the project files in the target project directory using your file-writing tools. A text-only response without created files counts as a failed attempt.';
 const FAIL_VERDICT = /VERDICT:\s*FAIL\b/i;
 const PASS_VERDICT = /VERDICT:\s*PASS\b/i;
 const DEFECT_FINDING = /\b(?:defects?|failures?|errors?|issues?)\s*:\s*(?!none\b|no\b|0\b)/i;
@@ -72,7 +73,7 @@ export class RuntimeOrchestrator {
         artifacts.manager = await this.#safeExecute('manager', `Target project directory: ${this.#root}\nexistingProject: ${projectContext.existingProject}\n${projectSummary}\n\nCustomer request:\n${goal}`, state, 'Manager failed; continue from the customer request.');
         artifacts.architect = await this.#safeExecute('architect', this.#artifactHandoff(goal, artifacts, projectSummary), state, 'Architecture unavailable; continue conservatively and report the gap.');
         for (const roleId of implementationRoles)
-            artifacts[roleId] = await this.#safeExecute(roleId, this.#artifactHandoff(goal, artifacts, projectSummary), state, `${roleId} failed; continue independent work and report the gap.`, verifyArtifacts);
+            artifacts[roleId] = await this.#safeExecute(roleId, this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE, state, `${roleId} failed; continue independent work and report the gap.`, verifyArtifacts);
         let missingArtifacts = initialProjectArtifacts === 0 && (await this.#projectArtifacts()) === 0;
         if (missingArtifacts) {
             artifacts.artifactVerification =
@@ -86,7 +87,7 @@ export class RuntimeOrchestrator {
         if (this.#reportsDefects(artifacts.tester)) {
             for (let attempt = 0; attempt < this.#maxFixAttempts; attempt += 1) {
                 state.attempts += 1;
-                artifacts.fixer = await this.#safeExecute('fixer', this.#artifactHandoff(goal, artifacts, projectSummary), state, 'Fix failed; preserve defect for review.');
+                artifacts.fixer = await this.#safeExecute('fixer', this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE, state, 'Fix failed; preserve defect for review.');
                 missingArtifacts = initialProjectArtifacts === 0 && (await this.#projectArtifacts()) === 0;
                 if (missingArtifacts) {
                     artifacts.artifactVerification = `VERDICT: FAIL - no project artifacts exist in target directory ${this.#root}.`;

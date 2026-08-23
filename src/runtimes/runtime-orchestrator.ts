@@ -53,6 +53,8 @@ const BACKEND_SIGNAL =
   /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b|\bbot\b|бэкенд|бекенд|сервер|база\s+данных|микросервис/i;
 const FRONTEND_SIGNAL =
   /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b|website|web-?site|landing|portfolio|pages?\b|blog|e-?commerce|портфолио|сайт|лендинг|страниц|интерфейс|магазин|блог|витрин|фронтенд/i;
+const IMPLEMENTATION_DIRECTIVE =
+  '\n\nYou MUST create or modify the project files in the target project directory using your file-writing tools. A text-only response without created files counts as a failed attempt.';
 const FAIL_VERDICT = /VERDICT:\s*FAIL\b/i;
 const PASS_VERDICT = /VERDICT:\s*PASS\b/i;
 const DEFECT_FINDING = /\b(?:defects?|failures?|errors?|issues?)\s*:\s*(?!none\b|no\b|0\b)/i;
@@ -140,7 +142,7 @@ export class RuntimeOrchestrator {
     for (const roleId of implementationRoles)
       artifacts[roleId] = await this.#safeExecute(
         roleId,
-        this.#artifactHandoff(goal, artifacts, projectSummary),
+        this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE,
         state,
         `${roleId} failed; continue independent work and report the gap.`,
         verifyArtifacts,
@@ -165,7 +167,7 @@ export class RuntimeOrchestrator {
         state.attempts += 1;
         artifacts.fixer = await this.#safeExecute(
           'fixer',
-          this.#artifactHandoff(goal, artifacts, projectSummary),
+          this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE,
           state,
           'Fix failed; preserve defect for review.',
         );
@@ -384,9 +386,7 @@ export class RuntimeOrchestrator {
       acceptingActivity = false;
       clearInterval(heartbeat);
       if (!result.success)
-        throw new Error(
-          result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`,
-        );
+        throw new Error(result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`);
       if (verify !== undefined) {
         const problem = await verify();
         if (problem !== undefined) {
