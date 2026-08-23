@@ -124,13 +124,39 @@ function padVisible(text: string, width: number): string {
   return missing > 0 ? text + ' '.repeat(missing) : text;
 }
 
-export function panel(title: string, lines: string[], theme: Theme): string {
-  const width = Math.max(visibleWidth(title) + 2, ...lines.map((line) => visibleWidth(line)));
+/** Truncates a string to a visible width without breaking ANSI color sequences. */
+export function truncateVisible(text: string, width: number): string {
+  if (visibleWidth(text) <= width) return text;
+  let result = '';
+  let visible = 0;
+  let index = 0;
+  while (index < text.length && visible < width) {
+    if (text.startsWith('\x1B[', index)) {
+      const sequence = /^\x1B\[[0-9;]*m/.exec(text.slice(index));
+      if (sequence) {
+        result += sequence[0];
+        index += sequence[0].length;
+        continue;
+      }
+    }
+    result += text.charAt(index);
+    visible += 1;
+    index += 1;
+  }
+  return text.includes('\x1B[') ? `${result}\x1B[0m` : result;
+}
+
+export function panel(title: string, lines: string[], theme: Theme, maxWidth?: number): string {
+  const fitted =
+    maxWidth === undefined
+      ? lines
+      : lines.map((line) => truncateVisible(line, Math.max(8, maxWidth - 4)));
+  const width = Math.max(visibleWidth(title) + 2, ...fitted.map((line) => visibleWidth(line)));
   const fill = Math.max(1, width - visibleWidth(title) - 1);
   const border = theme.primary;
   return [
     border(`╭─ ${title} ${'─'.repeat(fill)}╮`),
-    ...lines.map((line) => `${border('│')} ${padVisible(line, width)} ${border('│')}`),
+    ...fitted.map((line) => `${border('│')} ${padVisible(line, width)} ${border('│')}`),
     border(`╰${'─'.repeat(width + 2)}╯`),
   ].join('\n');
 }
@@ -183,6 +209,7 @@ const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/
 export interface DashboardOptions {
   verbose?: boolean;
   now?: number;
+  maxWidth?: number;
 }
 
 export function renderDashboard(
@@ -218,6 +245,7 @@ export function renderDashboard(
       `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
     ],
     theme,
+    options.maxWidth,
   );
   const agents = panel(
     'Agents',
@@ -226,6 +254,7 @@ export function renderDashboard(
         ` ${theme.accent('▸')} ${role.name.padEnd(19)} ${statusBadge(latest.get(role.id) ?? 'WAITING', theme)}`,
     ),
     theme,
+    options.maxWidth,
   );
   const activity = panel(
     'Activity',
@@ -234,13 +263,18 @@ export function renderDashboard(
       `${theme.secondary('Retry:')}  ${retry ? (retry.message.split('\n')[0] ?? '').slice(0, 120) : 'none'}`,
     ],
     theme,
+    options.maxWidth,
   );
   const sections = [overview, agents, activity];
-  if (state.status !== 'RUNNING') sections.push(renderSummary(state, theme));
+  if (state.status !== 'RUNNING') sections.push(renderSummary(state, theme, options.maxWidth));
   return sections.join('\n');
 }
 
-export function renderSummary(state: RuntimeWorkflowState, theme: Theme): string {
+export function renderSummary(
+  state: RuntimeWorkflowState,
+  theme: Theme,
+  maxWidth?: number,
+): string {
   const failures = state.events.filter((event) => event.status === 'FAILED');
   const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
   const finishedMs = state.updatedAt ? Date.parse(state.updatedAt) : Date.now();
@@ -260,5 +294,6 @@ export function renderSummary(state: RuntimeWorkflowState, theme: Theme): string
       `${theme.secondary('Duration:')} ${duration}  ${theme.secondary('Fix cycles:')} ${state.attempts}  ${theme.secondary('Sessions:')} ${state.sessions.length}  ${theme.secondary('Events:')} ${state.events.length}`,
     ],
     theme,
+    maxWidth,
   );
 }

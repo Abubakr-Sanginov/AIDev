@@ -193,7 +193,11 @@ let live = false;
 function frame(state: RuntimeWorkflowState): string {
   const config = options();
   const theme = currentTheme();
-  return `${renderBanner(theme, VERSION)}${renderDashboard(state, config.root, theme, { verbose: config.verbose })}\n`;
+  const dashboard = renderDashboard(state, config.root, theme, {
+    verbose: config.verbose,
+    ...(process.stdout.columns ? { maxWidth: process.stdout.columns } : {}),
+  });
+  return `${renderBanner(theme, VERSION)}${dashboard}\n`;
 }
 
 // The live dashboard redraws in place on the alternate screen buffer (like
@@ -205,7 +209,9 @@ function render(state: RuntimeWorkflowState): void {
     process.stdout.write('\x1B[?1049h\x1B[?25l');
     live = true;
   }
-  process.stdout.write(`\x1B[H${frame(state)}\x1B[0J`);
+  // Home + erase the whole alternate screen before drawing: the frame width
+  // varies with activity content, so overwriting alone leaves stale fragments.
+  process.stdout.write(`\x1B[H\x1B[2J${frame(state)}`);
 }
 
 function stopLive(): void {

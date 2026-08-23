@@ -3,6 +3,7 @@ import {
   buildOpenCodeRunArgs,
   OpenCodeRuntime,
   parseOpenCodeJsonEvents,
+  summarizeOpenCodeFailure,
 } from '../src/runtimes/opencode/runtime.js';
 import type { ProcessRunner } from '../src/runtimes/process.js';
 import type {
@@ -124,6 +125,24 @@ describe('OpenCodeRuntime', () => {
     expect(() =>
       parseOpenCodeJsonEvents(JSON.stringify({ type: 'error', error: { message: 'No provider' } })),
     ).toThrow('OpenCode JSON event stream contained no textual result. No provider');
+  });
+
+  it('summarizes nonzero JSON event failures into readable messages', () => {
+    const stdout = [
+      JSON.stringify({ type: 'session', sessionID: 'ses_1' }),
+      JSON.stringify({
+        type: 'error',
+        timestamp: 1787498552844,
+        sessionID: 'ses_1',
+        error: { name: 'ProviderAuthError', message: 'Provider is not authenticated.' },
+      }),
+    ].join('\n');
+    expect(summarizeOpenCodeFailure({ code: 2, stdout, stderr: '' })).toBe(
+      'OpenCode exited with code 2: Provider is not authenticated.',
+    );
+    expect(summarizeOpenCodeFailure({ code: 7, stdout: '', stderr: 'provider failed' })).toBe(
+      'provider failed',
+    );
   });
 
   it('persists a returned session ID and resumes it on the next execution', async () => {

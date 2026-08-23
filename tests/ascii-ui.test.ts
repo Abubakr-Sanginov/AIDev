@@ -13,6 +13,7 @@ import {
   resolveTheme,
   spinnerFrame,
   statusBadge,
+  truncateVisible,
 } from '../src/ui/ascii.js';
 import { loadConfig, resetConfig, setConfigValue } from '../src/config.js';
 import { appendRunRecord, listRunRecords } from '../src/history.js';
@@ -78,6 +79,12 @@ describe('ascii ui', () => {
     expect(rows[0]?.startsWith('╭')).toBe(true);
     expect(rows.at(-1)?.startsWith('╰')).toBe(true);
     expect(new Set(rows.map((row) => row.length)).size).toBe(1);
+  });
+
+  it('clamps panels to the terminal width without breaking ANSI sequences', () => {
+    const output = panel('Activity', [`Retry:  ${'x'.repeat(200)}`], mono, 60);
+    for (const row of output.split('\n')) expect(row.length).toBeLessThanOrEqual(60);
+    expect(truncateVisible('abcdef', 3)).toBe('abc');
   });
 
   it('formats durations and estimates ETA', () => {

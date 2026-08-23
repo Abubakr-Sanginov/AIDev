@@ -3,7 +3,7 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { buildLogFollowerOptions } from '../../terminal/log-follower.js';
 import type { TerminalLauncher } from '../../terminal/terminal.js';
-import { runProcess, type ProcessRunner } from '../process.js';
+import { runProcess, type ProcessResult, type ProcessRunner } from '../process.js';
 import type {
   AgentRequest,
   AuthResult,
@@ -71,6 +71,29 @@ function eventError(event: OpenCodeEvent): string | undefined {
     typeof event.error === 'string' ? event.error : undefined,
     error?.message,
     error?.name,
+  );
+}
+
+/** Builds a readable failure message from an OpenCode JSON event stream. */
+export function summarizeOpenCodeFailure(result: ProcessResult): string {
+  const messages: string[] = [];
+  for (const line of result.stdout.split(/\r?\n/u)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const event = asRecord(JSON.parse(trimmed) as unknown) as OpenCodeEvent | undefined;
+      if (!event) continue;
+      const message = eventError(event) ?? eventText(event);
+      if (message !== undefined) messages.push(message);
+    } catch {
+      // Not a JSON event line; skip it.
+    }
+  }
+  const detail = [...new Set(messages)].join(' ').replaceAll(/\s+/gu, ' ').trim();
+  if (detail) return `OpenCode exited with code ${result.code}: ${detail.slice(0, 400)}`;
+  return (
+    (result.stderr || result.stdout).trim().slice(0, 400) ||
+    `OpenCode exited with code ${result.code}.`
   );
 }
 
@@ -329,10 +352,9 @@ export class OpenCodeRuntime implements CodingRuntime {
       }
       if (result.code !== 0) {
         session.status = 'failed';
-        const detail = (result.stderr || result.stdout).trim();
         return {
           success: false,
-          output: detail || `OpenCode exited with code ${result.code}.`,
+          output: summarizeOpenCodeFailure(result),
           exitCode: result.code,
         };
       }
