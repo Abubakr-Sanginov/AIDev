@@ -1,10 +1,12 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { durableWriteFile } from './durable-file.js';
 import { roles } from './roles.js';
+const GITIGNORE_ENTRIES = ['.ai-dev-team/', '.ai-team/'];
 export class StateStore {
     directory;
     #writeOptions;
+    #gitignoreChecked = false;
     constructor(root, writeOptions = {}) {
         this.directory = path.join(root, '.ai-dev-team');
         this.#writeOptions = writeOptions;
@@ -22,6 +24,7 @@ export class StateStore {
                 await writeFile(path.join(this.directory, file), `# ${file.slice(0, -3)}\n`, 'utf8');
             }
         }
+        await this.#ensureGitIgnored();
     }
     async save(state) {
         await this.initialize();
@@ -52,6 +55,45 @@ export class StateStore {
     }
     async #atomic(file, content) {
         await durableWriteFile(path.join(this.directory, file), content, this.#writeOptions);
+    }
+    /**
+     * Keeps runtime state out of the target project's git status by appending the
+     * state directories to its .gitignore. Runs once per store instance and only
+     * for projects that already use Git. Best effort, never throws.
+     */
+    async #ensureGitIgnored() {
+        if (this.#gitignoreChecked)
+            return;
+        this.#gitignoreChecked = true;
+        const root = path.dirname(this.directory);
+        try {
+            await lstat(path.join(root, '.git')); // a plain file for worktrees and submodules
+        }
+        catch {
+            return;
+        }
+        const file = path.join(root, '.gitignore');
+        let content = '';
+        try {
+            content = await readFile(file, 'utf8');
+        }
+        catch {
+            // No .gitignore yet; it is created below.
+        }
+        const present = new Set(content
+            .split(/\r?\n/u)
+            .map((line) => line.trim())
+            .filter((line) => line !== '' && !line.startsWith('#')));
+        const missing = GITIGNORE_ENTRIES.filter((entry) => !present.has(entry) && !present.has(entry.slice(0, -1)));
+        if (missing.length === 0)
+            return;
+        try {
+            const separator = content === '' || content.endsWith('\n') ? '' : '\n';
+            await writeFile(file, `${content}${separator}${missing.join('\n')}\n`, 'utf8');
+        }
+        catch {
+            // A read-only project must not fail the run over a convenience entry.
+        }
     }
 }
 function scheduledRoles(state) {

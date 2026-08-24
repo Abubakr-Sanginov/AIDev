@@ -21,6 +21,8 @@ export interface RuntimeWorkflowState {
     completedPhases?: number;
     totalPhases?: number;
     currentRoleId?: string;
+    /** Model currently serving the workflow (Auto rotation keeps it current). */
+    model?: string;
     projectContext?: ProjectContext;
 }
 export interface RuntimeWorkflowOptions {
@@ -29,7 +31,14 @@ export interface RuntimeWorkflowOptions {
     maxFixAttempts?: number;
     visibleRuntime?: boolean;
     heartbeatMs?: number;
+    /** Pin every stage to this exact model. */
     model?: string;
+    /**
+     * Ordered Auto-mode candidates: the workflow starts with the first and
+     * rotates to the next whenever the active model fails fatally (quota,
+     * billing, authentication). Free models belong at the front of the list.
+     */
+    models?: string[];
     maxAgentAttempts?: number;
     retryBackoffMs?: number;
     onState?(state: RuntimeWorkflowState): Promise<void> | void;

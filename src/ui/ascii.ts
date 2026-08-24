@@ -113,7 +113,11 @@ export function renderBanner(theme: Theme, version: string): string {
   return [...art, subtitle, ''].join('\n');
 }
 
-const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+// ANSI escape (0x1B) built through the RegExp constructor so linting tools
+// that reject control characters inside regex literals stay satisfied.
+const ESC = String.fromCharCode(27);
+const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-9;]*m`, 'gu');
+const ANSI_SEQUENCE = new RegExp(`^${ESC}\\[[0-9;]*m`);
 
 export function visibleWidth(text: string): number {
   return text.replace(ANSI_PATTERN, '').length;
@@ -131,8 +135,8 @@ export function truncateVisible(text: string, width: number): string {
   let visible = 0;
   let index = 0;
   while (index < text.length && visible < width) {
-    if (text.startsWith('\x1B[', index)) {
-      const sequence = /^\x1B\[[0-9;]*m/.exec(text.slice(index));
+    if (text.startsWith(ESC + '[', index)) {
+      const sequence = ANSI_SEQUENCE.exec(text.slice(index));
       if (sequence) {
         result += sequence[0];
         index += sequence[0].length;
@@ -143,7 +147,7 @@ export function truncateVisible(text: string, width: number): string {
     visible += 1;
     index += 1;
   }
-  return text.includes('\x1B[') ? `${result}\x1B[0m` : result;
+  return text.includes(`${ESC}[`) ? `${result}${ESC}[0m` : result;
 }
 
 export function panel(title: string, lines: string[], theme: Theme, maxWidth?: number): string {
@@ -242,6 +246,7 @@ export function renderDashboard(
       `${theme.accent(progressBar(completed, total))} ${theme.muted(`(${completed}/${total} phases)`)}`,
       `${theme.secondary('Goal:')}  ${state.goal.slice(0, 96)}`,
       `${theme.secondary('Path:')}  ${root}`,
+      `${theme.secondary('Model:')} ${state.model ?? theme.muted('runtime default')}`,
       `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
     ],
     theme,
@@ -276,6 +281,7 @@ export function renderSummary(
   maxWidth?: number,
 ): string {
   const failures = state.events.filter((event) => event.status === 'FAILED');
+  const failedRoles = [...new Set(failures.map((event) => event.roleId))];
   const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
   const finishedMs = state.updatedAt ? Date.parse(state.updatedAt) : Date.now();
   const duration = Number.isNaN(startedMs)
@@ -285,15 +291,16 @@ export function renderSummary(
     state.status === 'DONE'
       ? theme.success('✔ Implementation, verification, and review completed.')
       : theme.failure(
-          `✖ ${failures.length} terminal failure(s); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`,
+          `✖ ${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`,
         );
-  return panel(
-    'Run summary',
-    [
-      headline,
-      `${theme.secondary('Duration:')} ${duration}  ${theme.secondary('Fix cycles:')} ${state.attempts}  ${theme.secondary('Sessions:')} ${state.sessions.length}  ${theme.secondary('Events:')} ${state.events.length}`,
-    ],
-    theme,
-    maxWidth,
-  );
+  const lines = [
+    headline,
+    `${theme.secondary('Duration:')} ${duration}  ${theme.secondary('Fix cycles:')} ${state.attempts}  ${theme.secondary('Sessions:')} ${state.sessions.length}  ${theme.secondary('Events:')} ${state.events.length}`,
+  ];
+  const rootCause = failures.at(-1);
+  if (rootCause !== undefined)
+    lines.push(
+      `${theme.secondary('Root cause:')} ${rootCause.roleId}: ${(rootCause.message.split('\n')[0] ?? '').slice(0, 480)}`,
+    );
+  return panel('Run summary', lines, theme, maxWidth);
 }

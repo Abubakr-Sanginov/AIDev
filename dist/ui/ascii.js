@@ -92,7 +92,11 @@ export function renderBanner(theme, version) {
         theme.muted(`  v${version}`);
     return [...art, subtitle, ''].join('\n');
 }
-const ANSI_PATTERN = /\x1B\[[0-9;]*m/g;
+// ANSI escape (0x1B) built through the RegExp constructor so linting tools
+// that reject control characters inside regex literals stay satisfied.
+const ESC = String.fromCharCode(27);
+const ANSI_PATTERN = new RegExp(`${ESC}\\[[0-9;]*m`, 'gu');
+const ANSI_SEQUENCE = new RegExp(`^${ESC}\\[[0-9;]*m`);
 export function visibleWidth(text) {
     return text.replace(ANSI_PATTERN, '').length;
 }
@@ -100,13 +104,38 @@ function padVisible(text, width) {
     const missing = width - visibleWidth(text);
     return missing > 0 ? text + ' '.repeat(missing) : text;
 }
-export function panel(title, lines, theme) {
-    const width = Math.max(visibleWidth(title) + 2, ...lines.map((line) => visibleWidth(line)));
+/** Truncates a string to a visible width without breaking ANSI color sequences. */
+export function truncateVisible(text, width) {
+    if (visibleWidth(text) <= width)
+        return text;
+    let result = '';
+    let visible = 0;
+    let index = 0;
+    while (index < text.length && visible < width) {
+        if (text.startsWith(ESC + '[', index)) {
+            const sequence = ANSI_SEQUENCE.exec(text.slice(index));
+            if (sequence) {
+                result += sequence[0];
+                index += sequence[0].length;
+                continue;
+            }
+        }
+        result += text.charAt(index);
+        visible += 1;
+        index += 1;
+    }
+    return text.includes(`${ESC}[`) ? `${result}${ESC}[0m` : result;
+}
+export function panel(title, lines, theme, maxWidth) {
+    const fitted = maxWidth === undefined
+        ? lines
+        : lines.map((line) => truncateVisible(line, Math.max(8, maxWidth - 4)));
+    const width = Math.max(visibleWidth(title) + 2, ...fitted.map((line) => visibleWidth(line)));
     const fill = Math.max(1, width - visibleWidth(title) - 1);
     const border = theme.primary;
     return [
         border(`╭─ ${title} ${'─'.repeat(fill)}╮`),
-        ...lines.map((line) => `${border('│')} ${padVisible(line, width)} ${border('│')}`),
+        ...fitted.map((line) => `${border('│')} ${padVisible(line, width)} ${border('│')}`),
         border(`╰${'─'.repeat(width + 2)}╯`),
     ].join('\n');
 }
@@ -169,20 +198,22 @@ export function renderDashboard(state, root, theme, options = {}) {
         `${theme.accent(progressBar(completed, total))} ${theme.muted(`(${completed}/${total} phases)`)}`,
         `${theme.secondary('Goal:')}  ${state.goal.slice(0, 96)}`,
         `${theme.secondary('Path:')}  ${root}`,
+        `${theme.secondary('Model:')} ${state.model ?? theme.muted('runtime default')}`,
         `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
-    ], theme);
-    const agents = panel('Agents', roles.map((role) => ` ${theme.accent('▸')} ${role.name.padEnd(19)} ${statusBadge(latest.get(role.id) ?? 'WAITING', theme)}`), theme);
+    ], theme, options.maxWidth);
+    const agents = panel('Agents', roles.map((role) => ` ${theme.accent('▸')} ${role.name.padEnd(19)} ${statusBadge(latest.get(role.id) ?? 'WAITING', theme)}`), theme, options.maxWidth);
     const activity = panel('Activity', [
         `${theme.secondary('Latest:')} ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 120)}` : 'Waiting'}`,
         `${theme.secondary('Retry:')}  ${retry ? (retry.message.split('\n')[0] ?? '').slice(0, 120) : 'none'}`,
-    ], theme);
+    ], theme, options.maxWidth);
     const sections = [overview, agents, activity];
     if (state.status !== 'RUNNING')
-        sections.push(renderSummary(state, theme));
+        sections.push(renderSummary(state, theme, options.maxWidth));
     return sections.join('\n');
 }
-export function renderSummary(state, theme) {
+export function renderSummary(state, theme, maxWidth) {
     const failures = state.events.filter((event) => event.status === 'FAILED');
+    const failedRoles = [...new Set(failures.map((event) => event.roleId))];
     const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
     const finishedMs = state.updatedAt ? Date.parse(state.updatedAt) : Date.now();
     const duration = Number.isNaN(startedMs)
@@ -190,9 +221,13 @@ export function renderSummary(state, theme) {
         : formatDuration(Math.max(0, finishedMs - startedMs));
     const headline = state.status === 'DONE'
         ? theme.success('✔ Implementation, verification, and review completed.')
-        : theme.failure(`✖ ${failures.length} terminal failure(s); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`);
-    return panel('Run summary', [
+        : theme.failure(`✖ ${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`);
+    const lines = [
         headline,
         `${theme.secondary('Duration:')} ${duration}  ${theme.secondary('Fix cycles:')} ${state.attempts}  ${theme.secondary('Sessions:')} ${state.sessions.length}  ${theme.secondary('Events:')} ${state.events.length}`,
-    ], theme);
+    ];
+    const rootCause = failures.at(-1);
+    if (rootCause !== undefined)
+        lines.push(`${theme.secondary('Root cause:')} ${rootCause.roleId}: ${(rootCause.message.split('\n')[0] ?? '').slice(0, 480)}`);
+    return panel('Run summary', lines, theme, maxWidth);
 }

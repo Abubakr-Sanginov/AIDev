@@ -4,7 +4,7 @@ export interface CliConfig {
     approval?: string;
     theme?: string;
 }
-declare const CONFIG_KEYS: readonly ['runtime', 'model', 'approval', 'theme'];
+declare const CONFIG_KEYS: readonly ["runtime", "model", "approval", "theme"];
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 export declare function configPath(root: string): string;
 export declare function loadConfig(root: string): Promise<CliConfig>;

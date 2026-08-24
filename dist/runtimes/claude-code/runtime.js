@@ -105,7 +105,9 @@ export class ClaudeCodeRuntime {
     }
     async execute(session, request) {
         session.status = 'running';
-        const args = ['-p', request.prompt, '--output-format', 'json'];
+        // The prompt is piped through stdin: Windows cmd.exe shims reject command
+        // lines longer than 8191 characters, and orchestrated prompts exceed that.
+        const args = ['-p', '--output-format', 'json'];
         if (request.model)
             args.push('--model', request.model);
         if (request.resumeSessionId)
@@ -130,7 +132,7 @@ export class ClaudeCodeRuntime {
                     type: 'output',
                     message: line.trim().slice(0, 160),
                 });
-        });
+        }, request.prompt);
         if (session.outputFile)
             await appendFile(session.outputFile, `\n[ ${result.code === 0 ? 'COMPLETED' : 'FAILED'} ] Controlled Claude Code process exited with code ${result.code}.\n`, 'utf8');
         session.status = result.code === 0 ? 'completed' : 'failed';

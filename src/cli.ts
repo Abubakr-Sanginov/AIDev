@@ -5,6 +5,7 @@ import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import { createDefaultRegistry } from './runtimes/default-registry.js';
+import { autoModelCandidates, modelChoiceLabel } from './runtimes/model-selection.js';
 import {
   RuntimeOrchestrator,
   workflowProgress,
@@ -48,7 +49,11 @@ program
   .option('--fix-attempts <count>', 'maximum tester-fixer-retest cycles', '2')
   .option('--theme <name>', `color theme: ${THEME_NAMES.join(', ')}`)
   .option('--verbose', 'show low-level runtime activity')
-  .option('--runtime-terminal', 'show controlled real-runtime output in terminal windows')
+  .option(
+    '--runtime-terminal',
+    'show controlled real-runtime output in terminal windows (default)',
+    true,
+  )
   .option('--no-runtime-terminal', 'run real-runtime processes headlessly');
 
 function options(): {
@@ -138,20 +143,32 @@ async function resolveModel(
   runtime: Awaited<ReturnType<typeof ensureRuntime>>,
   root: string,
   requested?: string,
-): Promise<string | undefined> {
+): Promise<{ model?: string; models?: string[] }> {
   const discovery = await runtime.discoverModels(root);
   if (requested) {
     if (!discovery.models.includes(requested))
       throw new Error(`Model '${requested}' was not reported as available by ${runtime.name}.`);
-    return requested;
+    return { model: requested };
   }
   if (discovery.message) process.stdout.write(`${discovery.message}\n`);
-  if (!process.stdin.isTTY) return undefined;
+  // Auto mode rotates through every provider, cheapest (free) models first.
+  const candidates = autoModelCandidates(discovery);
+  if (!process.stdin.isTTY) return candidates.length === 0 ? {} : { models: candidates };
   const selected = await choose('Choose a model:', [
-    { id: 'auto', name: 'Auto (provider chooses and may switch models)' },
-    ...discovery.models.map((model) => ({ id: model, name: model })),
+    {
+      id: 'auto',
+      name:
+        candidates.length === 0
+          ? 'Auto (provider chooses and may switch models)'
+          : `Auto (${candidates.length} models across all providers, free first)`,
+    },
+    ...discovery.models.map((model) => ({
+      id: model,
+      name: modelChoiceLabel(model, discovery),
+    })),
   ]);
-  return selected === 'auto' ? undefined : selected;
+  if (selected !== 'auto') return { model: selected };
+  return candidates.length === 0 ? {} : { models: candidates };
 }
 
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
@@ -174,6 +191,7 @@ export function renderRuntimeState(
     `AI DEV TEAM  ${state.status}`,
     `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}] ${progress.completed}/${progress.total}`,
     `Path: ${root}`,
+    `Model: ${state.model ?? 'runtime default'}`,
     `Phase: ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  Attempt: ${attempt}`,
     ...roles.map((role) => `${role.name.padEnd(19)} ${latest.get(role.id) ?? 'WAITING'}`),
     `Latest: ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 180)}` : 'Waiting'}`,
@@ -181,9 +199,15 @@ export function renderRuntimeState(
   ];
   if (state.status !== 'RUNNING') {
     const failures = state.events.filter((candidate) => candidate.status === 'FAILED');
+    const failedRoles = [...new Set(failures.map((event) => event.roleId))];
     lines.push(
-      `Summary: ${state.status === 'DONE' ? 'Implementation, verification, and review completed.' : `${failures.length} terminal failure(s); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`}`,
+      `Summary: ${state.status === 'DONE' ? 'Implementation, verification, and review completed.' : `${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`}`,
     );
+    const rootCause = failures.at(-1);
+    if (rootCause !== undefined)
+      lines.push(
+        `Root cause: ${rootCause.roleId}: ${(rootCause.message.split('\n')[0] ?? '').slice(0, 480)}`,
+      );
   }
   return lines.join('\n') + '\n';
 }
@@ -281,7 +305,7 @@ async function run(goal?: string): Promise<void> {
   await validateProjectRoot(config.root);
   const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime);
   const runtime = await ensureRuntime(runtimeId, approval);
-  const model = await resolveModel(runtime, config.root, config.model ?? saved.model);
+  const selection = await resolveModel(runtime, config.root, config.model ?? saved.model);
   const task = await resolveGoal(goal);
   if (!task) throw new Error('Task cannot be empty.');
   process.stdout.write(renderBanner(sessionTheme, VERSION));
@@ -289,7 +313,8 @@ async function run(goal?: string): Promise<void> {
   const orchestrator = new RuntimeOrchestrator({
     root: config.root,
     runtime,
-    ...(model === undefined ? {} : { model }),
+    ...(selection.model === undefined ? {} : { model: selection.model }),
+    ...(selection.models === undefined ? {} : { models: selection.models }),
     visibleRuntime: config.runtimeTerminal && runtime.id !== 'mock',
     maxAgentAttempts: config.maxAgentAttempts,
     retryBackoffMs: config.retryBackoffMs,
@@ -312,7 +337,7 @@ async function run(goal?: string): Promise<void> {
   }
   // Leave one final frame in the normal buffer as the persistent run record.
   process.stdout.write(frame(state));
-  await recordHistory(config.root, task, state, model);
+  await recordHistory(config.root, task, state, selection.model);
   process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
 

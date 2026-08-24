@@ -1,4 +1,5 @@
 import { readdir } from 'node:fs/promises';
+import { isFatalDiagnostic } from './failure-policy.js';
 import { getRole, isReadOnlyRole, roles } from '../roles.js';
 import { formatProjectContext, inspectProject } from '../project-context.js';
 import { formatSkillsForPrompt, writeSkillsToProject } from '../skills.js';
@@ -19,25 +20,38 @@ export class RuntimeOrchestrator {
     #maxFixAttempts;
     #visibleRuntime;
     #heartbeatMs;
-    #model;
+    #modelCandidates;
+    #modelIndex = 0;
     #maxAgentAttempts;
     #retryBackoffMs;
     #onState;
     #onStateError;
     #statePublication = Promise.resolve();
     #scheduledRoles = [];
+    #fatalDiagnostic;
     constructor(options) {
         this.#root = options.root;
         this.#runtime = options.runtime;
         this.#maxFixAttempts = options.maxFixAttempts ?? 2;
         this.#visibleRuntime = options.visibleRuntime ?? false;
         this.#heartbeatMs = options.heartbeatMs ?? 2_000;
-        if (options.model !== undefined)
-            this.#model = options.model;
+        // An explicitly pinned model wins; otherwise Auto rotates the candidate list.
+        this.#modelCandidates =
+            options.model !== undefined ? [options.model] : [...(options.models ?? [])];
         this.#maxAgentAttempts = Math.max(1, options.maxAgentAttempts ?? 3);
         this.#retryBackoffMs = Math.max(0, options.retryBackoffMs ?? 100);
         this.#onState = options.onState ?? (() => undefined);
         this.#onStateError = options.onStateError ?? (() => undefined);
+    }
+    get #activeModel() {
+        return this.#modelCandidates[this.#modelIndex];
+    }
+    /** Advances to the next Auto candidate; undefined when the list is exhausted. */
+    #advanceModel() {
+        if (this.#modelIndex >= this.#modelCandidates.length - 1)
+            return undefined;
+        this.#modelIndex += 1;
+        return this.#activeModel;
     }
     async run(goal) {
         const projectContext = await inspectProject(this.#root);
@@ -57,6 +71,7 @@ export class RuntimeOrchestrator {
             updatedAt: now,
             completedPhases: 0,
             totalPhases: this.#scheduledRoles.length,
+            ...(this.#activeModel === undefined ? {} : { model: this.#activeModel }),
             projectContext,
         };
         const artifacts = {};
@@ -90,8 +105,11 @@ export class RuntimeOrchestrator {
             artifacts.tester = `${artifacts.tester}\n${artifacts.artifactVerification}`;
         if (this.#reportsDefects(artifacts.tester)) {
             for (let attempt = 0; attempt < this.#maxFixAttempts; attempt += 1) {
-                state.attempts += 1;
                 artifacts.fixer = await this.#safeExecute('fixer', this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE, state, 'Fix failed; preserve defect for review.');
+                // Cycles where the fixer never actually ran (e.g. skipped after a
+                // fatal runtime failure) must not count as fix attempts.
+                if (!artifacts.fixer.startsWith('[UNAVAILABLE '))
+                    state.attempts += 1;
                 missingArtifacts = initialProjectArtifacts === 0 && (await this.#projectArtifacts()) === 0;
                 if (missingArtifacts) {
                     artifacts.artifactVerification = `VERDICT: FAIL - no project artifacts exist in target directory ${this.#root}.`;
@@ -145,8 +163,14 @@ export class RuntimeOrchestrator {
             /\bAPPROVED\b|VERDICT:\s*PASS\b/i.test(output));
     }
     async #safeExecute(roleId, prompt, state, fallback, verify) {
+        if (this.#fatalDiagnostic !== undefined) {
+            this.#event(state, roleId, 'SKIPPED', `Skipped: a fatal runtime failure already ended the workflow (${this.#fatalDiagnostic}).`);
+            await this.#publish(state);
+            return `[UNAVAILABLE ${roleId}] ${this.#fatalDiagnostic}.`;
+        }
         let diagnostic = 'Unknown runtime failure';
-        for (let attempt = 1; attempt <= this.#maxAgentAttempts; attempt += 1) {
+        let attempt = 1;
+        while (attempt <= this.#maxAgentAttempts) {
             try {
                 const diagnosticContext = attempt === 1
                     ? ''
@@ -156,6 +180,25 @@ export class RuntimeOrchestrator {
             }
             catch (error) {
                 diagnostic = error instanceof Error ? error.message : String(error);
+                if (isFatalDiagnostic(diagnostic)) {
+                    // Billing/quota/auth failures kill the current model, not the stage:
+                    // rotate to the next Auto candidate before giving up.
+                    const previous = this.#activeModel;
+                    const next = this.#advanceModel();
+                    if (next !== undefined) {
+                        state.model = next;
+                        this.#event(state, roleId, 'RETRYING', `Fatal failure${previous === undefined ? '' : ` on ${previous}`}: ${diagnostic.slice(0, 220)} Switching to ${next}.`, attempt, this.#maxAgentAttempts);
+                        await this.#publish(state);
+                        continue; // provider switches do not consume agent attempts
+                    }
+                    // Retrying cannot fix billing, quota, or authentication problems
+                    // and no alternative model remains: fail fast with the actionable
+                    // provider message instead of burning retries.
+                    this.#fatalDiagnostic = diagnostic;
+                    this.#event(state, roleId, 'FAILED', `Fatal runtime failure, retries skipped: ${diagnostic}. Fix the provider account/model and rerun.`, attempt, this.#maxAgentAttempts);
+                    await this.#publish(state);
+                    return `[UNAVAILABLE ${roleId}] ${diagnostic}.`;
+                }
                 if (attempt === this.#maxAgentAttempts)
                     break;
                 const delay = this.#retryBackoffMs * 2 ** (attempt - 1);
@@ -165,6 +208,7 @@ export class RuntimeOrchestrator {
                 await this.#publish(state);
                 if (delay > 0)
                     await new Promise((resolve) => setTimeout(resolve, delay));
+                attempt += 1;
             }
         }
         this.#event(state, roleId, 'FAILED', `Retry limit exhausted (${this.#maxAgentAttempts} attempts): ${diagnostic}. ${fallback}`, this.#maxAgentAttempts, this.#maxAgentAttempts);
@@ -235,12 +279,13 @@ export class RuntimeOrchestrator {
         let acceptingActivity = true;
         try {
             const skillsBlock = await formatSkillsForPrompt(roleId);
+            const activeModel = this.#activeModel;
             const result = await this.#runtime.execute(session, {
                 prompt: `${role.systemPrompt}\n\n${skillsBlock}Execution budget: ${role.budget.maxSteps} steps and ${role.budget.maxToolCalls} tool calls.\n${context}`,
                 maxSteps: role.budget.maxSteps,
                 maxToolCalls: role.budget.maxToolCalls,
                 toolPolicy: isReadOnlyRole(roleId) ? 'read-only' : 'coding',
-                ...(this.#model === undefined ? {} : { model: this.#model }),
+                ...(activeModel === undefined ? {} : { model: activeModel }),
                 onActivity: async (activity) => {
                     if (!acceptingActivity || state.status !== 'RUNNING')
                         return;

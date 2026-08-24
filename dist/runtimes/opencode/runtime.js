@@ -24,7 +24,76 @@ function eventText(event) {
 }
 function eventError(event) {
     const error = asRecord(event.error);
-    return firstString(typeof event.error === 'string' ? event.error : undefined, error?.message, error?.name);
+    if (typeof event.error === 'string')
+        return event.error;
+    if (error === undefined)
+        return undefined;
+    // Provider errors nest the useful payload under `data` (e.g. OpenCode
+    // APIError -> data.message, data.statusCode); a bare error.name like
+    // "APIError" alone is not actionable.
+    const name = firstString(error.name);
+    const detail = firstString(error.message, asRecord(error.data)?.message);
+    const statusCode = asRecord(error.data)?.statusCode;
+    const status = typeof statusCode === 'number' ? ` (HTTP ${statusCode})` : '';
+    if (detail === undefined && name === undefined)
+        return undefined;
+    if (detail === undefined)
+        return `${name ?? 'Unknown error'}${status}`;
+    // Keep plain messages untouched (backwards-compatible summaries); attach the
+    // error class and HTTP status only when a provider status code is present.
+    return status === '' ? detail : `${name ?? 'API error'}${status}: ${detail}`;
+}
+/** Builds a readable failure message from an OpenCode JSON event stream. */
+export function summarizeOpenCodeFailure(result) {
+    const messages = [];
+    for (const line of result.stdout.split(/\r?\n/u)) {
+        const trimmed = line.trim();
+        if (!trimmed)
+            continue;
+        try {
+            const event = asRecord(JSON.parse(trimmed));
+            if (!event)
+                continue;
+            const message = eventError(event) ?? eventText(event);
+            if (message !== undefined)
+                messages.push(message);
+        }
+        catch {
+            // Not a JSON event line; skip it.
+        }
+    }
+    const detail = [...new Set(messages)].join(' ').replaceAll(/\s+/gu, ' ').trim();
+    if (detail)
+        return `OpenCode exited with code ${result.code}: ${detail.slice(0, 400)}`;
+    return ((result.stderr || result.stdout).trim().slice(0, 400) ||
+        `OpenCode exited with code ${result.code}.`);
+}
+/**
+ * Formats one streamed output line for the human-readable session log shown in
+ * the separate runtime window. JSON events become `[HH:MM:SS] type: detail`;
+ * anything else is kept verbatim so diagnostics are never lost.
+ */
+export function formatOpenCodeLogLine(line, prefix = '', now = new Date()) {
+    const trimmed = line.trim();
+    if (!trimmed)
+        return undefined;
+    try {
+        const event = asRecord(JSON.parse(trimmed));
+        if (!event)
+            return `${prefix}${trimmed}`;
+        const stamp = typeof event.timestamp === 'number' ? new Date(event.timestamp) : now;
+        const time = stamp.toLocaleTimeString('en-GB', { hour12: false });
+        const part = asRecord(event.part);
+        const detail = eventText(event) ??
+            eventError(event) ??
+            firstString(typeof part?.type === 'string' ? part.type : undefined);
+        const label = firstString(typeof event.type === 'string' ? event.type : undefined) ?? 'event';
+        const body = detail === undefined ? label : `${label}: ${detail.replaceAll(/\s+/gu, ' ').trim()}`;
+        return `${prefix}[${time}] ${body}`;
+    }
+    catch {
+        return `${prefix}${trimmed}`;
+    }
 }
 export function parseOpenCodeJsonEvents(stdout) {
     const source = stdout.trim();
@@ -74,7 +143,92 @@ export function parseOpenCodeJsonEvents(stdout) {
     }
     return { output: text.join(''), ...(sessionId === undefined ? {} : { sessionId }) };
 }
+function countBraces(text) {
+    let depth = 0;
+    for (const character of text) {
+        if (character === '{')
+            depth += 1;
+        else if (character === '}')
+            depth -= 1;
+    }
+    return depth;
+}
+/**
+ * Parses `opencode models --verbose` output: each model is a `provider/id`
+ * header line followed by a pretty-printed JSON metadata block whose `cost`
+ * fields reveal whether the model runs for free.
+ */
+export function parseOpenCodeVerboseModels(stdout) {
+    const models = [];
+    let currentId;
+    let collecting = false;
+    let depth = 0;
+    const buffer = [];
+    // Metadata is pretty-printed but not guaranteed strict JSON (trailing
+    // commas appear between fields), so fall back to a tolerant re-parse.
+    const flush = () => {
+        if (currentId === undefined || buffer.length === 0)
+            return;
+        let meta;
+        for (const text of [buffer.join('\n'), buffer.join('\n').replace(/,\s*([}\]])/gu, '$1')]) {
+            try {
+                meta = asRecord(JSON.parse(text));
+                break;
+            }
+            catch {
+                // Try the next normalization before giving up on this block.
+            }
+        }
+        if (meta === undefined)
+            return;
+        const cost = asRecord(meta.cost);
+        const zeroCost = typeof cost?.input === 'number' &&
+            typeof cost.output === 'number' &&
+            cost.input === 0 &&
+            cost.output === 0;
+        // Zero cost alone is unreliable: custom providers without published
+        // prices also report 0/0. Treat as free only OpenCode's own Zen tier
+        // at zero cost or IDs explicitly suffixed "-free".
+        const providerId = currentId.slice(0, Math.max(0, currentId.indexOf('/')));
+        const free = /(?:^|[/_.-])free$/iu.test(currentId) || (providerId.toLowerCase() === 'opencode' && zeroCost);
+        models.push({ id: currentId, free });
+    };
+    for (const line of stdout.split(/\r?\n/u)) {
+        if (!collecting) {
+            const trimmed = line.trim();
+            if (!trimmed)
+                continue;
+            if (/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/u.test(trimmed)) {
+                currentId = trimmed;
+                continue;
+            }
+            if (trimmed.startsWith('{') && currentId !== undefined) {
+                buffer.length = 0;
+                buffer.push(line);
+                depth = countBraces(line);
+                collecting = true;
+                if (depth <= 0) {
+                    // Single-line JSON block: complete immediately.
+                    flush();
+                    buffer.length = 0;
+                    collecting = false;
+                }
+            }
+            continue;
+        }
+        buffer.push(line);
+        depth += countBraces(line);
+        if (depth > 0)
+            continue;
+        collecting = false;
+        flush();
+        buffer.length = 0;
+    }
+    return models;
+}
 export function buildOpenCodeRunArgs(request) {
+    // The prompt itself is piped through stdin (see execute): Windows cmd.exe
+    // shims reject command lines longer than 8191 characters.
     const args = ['run', '--format', 'json'];
     if (request.toolPolicy === 'coding')
         args.push('--agent', 'build', '--auto');
@@ -82,7 +236,6 @@ export function buildOpenCodeRunArgs(request) {
         args.push('--model', request.model);
     if (request.resumeSessionId)
         args.push('--session', request.resumeSessionId);
-    args.push(request.prompt);
     return args;
 }
 export class OpenCodeRuntime {
@@ -162,6 +315,36 @@ export class OpenCodeRuntime {
     }
     async discoverModels(workingDirectory) {
         try {
+            const result = await this.#run('opencode', ['models', '--verbose'], workingDirectory, 60_000);
+            if (result.code !== 0) {
+                return {
+                    models: [],
+                    message: (result.stderr || result.stdout).trim() || 'OpenCode model discovery failed.',
+                };
+            }
+            const infos = parseOpenCodeVerboseModels(result.stdout);
+            if (infos.length === 0)
+                return await this.#discoverModelsPlain(workingDirectory);
+            const models = [...new Set(infos.map((info) => info.id))];
+            const freeModels = infos.filter((info) => info.free).map((info) => info.id);
+            return {
+                models,
+                ...(freeModels.length === 0 ? {} : { freeModels }),
+                ...(models.length === 0
+                    ? { message: 'OpenCode reported no models. Configure and authenticate a provider first.' }
+                    : {}),
+            };
+        }
+        catch (error) {
+            return {
+                models: [],
+                message: `OpenCode model discovery failed: ${this.#errorMessage(error)}`,
+            };
+        }
+    }
+    /** Fallback for CLIs without `--verbose`: plain model ID listing. */
+    async #discoverModelsPlain(workingDirectory) {
+        try {
             const result = await this.#run('opencode', ['models'], workingDirectory, 30_000);
             if (result.code !== 0) {
                 return {
@@ -175,8 +358,11 @@ export class OpenCodeRuntime {
                     .map((line) => line.trim())
                     .filter(Boolean)),
             ];
+            // IDs ending in "-free" are OpenCode's zero-cost tier.
+            const freeModels = models.filter((model) => /-free$/iu.test(model));
             return {
                 models,
+                ...(freeModels.length === 0 ? {} : { freeModels }),
                 ...(models.length === 0
                     ? { message: 'OpenCode reported no models. Configure and authenticate a provider first.' }
                     : {}),
@@ -202,7 +388,7 @@ export class OpenCodeRuntime {
             const logsDirectory = path.join(options.workingDirectory, '.ai-dev-team', 'logs');
             await mkdir(logsDirectory, { recursive: true });
             session.outputFile = path.join(logsDirectory, `${session.id}-${options.roleId}.log`);
-            await writeFile(session.outputFile, `[ ACTIVE ] OpenCode ${options.roleId} controlled process output\n`, 'utf8');
+            await writeFile(session.outputFile, `[ ACTIVE ] OpenCode ${options.roleId} — live session log\nStarted: ${session.createdAt}\nProject: ${options.workingDirectory}\n\n`, 'utf8');
             try {
                 const terminalProcess = await this.#terminal.open(buildLogFollowerOptions(options.workingDirectory, session.outputFile, this.name, options.roleId));
                 session.terminalOpened = true;
@@ -236,6 +422,29 @@ export class OpenCodeRuntime {
         if (readOnlyConfig !== undefined)
             process.env.OPENCODE_CONFIG_CONTENT = readOnlyConfig;
         try {
+            // Streamed JSON events can split across pipe chunks; buffer the
+            // incomplete tail so every log line is formatted exactly once.
+            let pendingLog = '';
+            const appendSessionLog = async (text, stream) => {
+                if (!session.outputFile || text === '')
+                    return;
+                pendingLog += text;
+                const lines = pendingLog.split(/\r?\n/u);
+                pendingLog = lines.pop() ?? '';
+                const formatted = lines
+                    .map((line) => formatOpenCodeLogLine(line, stream === 'stderr' ? '[stderr] ' : ''))
+                    .filter((line) => line !== undefined);
+                if (formatted.length > 0)
+                    await appendFile(session.outputFile, `${formatted.join('\n')}\n`, 'utf8');
+            };
+            const flushSessionLog = async () => {
+                if (!session.outputFile || !pendingLog.trim())
+                    return;
+                const formatted = formatOpenCodeLogLine(pendingLog);
+                pendingLog = '';
+                if (formatted !== undefined)
+                    await appendFile(session.outputFile, `${formatted}\n`, 'utf8');
+            };
             const result = await this.#run('opencode', buildOpenCodeRunArgs(effectiveRequest), session.workingDirectory, undefined, async (activity) => {
                 if (activity.type === 'started') {
                     await request.onActivity?.({
@@ -245,22 +454,20 @@ export class OpenCodeRuntime {
                     });
                     return;
                 }
-                const text = activity.text ?? '';
-                if (session.outputFile && text)
-                    await appendFile(session.outputFile, text, 'utf8');
-                const meaningful = this.#activityText(text);
+                await appendSessionLog(activity.text ?? '', activity.type === 'stderr' ? 'stderr' : 'stdout');
+                const meaningful = this.#activityText(activity.text ?? '');
                 if (meaningful)
                     await request.onActivity?.({ type: 'output', message: meaningful });
-            });
+            }, effectiveRequest.prompt);
+            await flushSessionLog();
             if (session.outputFile) {
                 await appendFile(session.outputFile, `\n[ ${result.code === 0 ? 'COMPLETED' : 'FAILED'} ] Controlled OpenCode process exited with code ${result.code}.\n`, 'utf8');
             }
             if (result.code !== 0) {
                 session.status = 'failed';
-                const detail = (result.stderr || result.stdout).trim();
                 return {
                     success: false,
-                    output: detail || `OpenCode exited with code ${result.code}.`,
+                    output: summarizeOpenCodeFailure(result),
                     exitCode: result.code,
                 };
             }

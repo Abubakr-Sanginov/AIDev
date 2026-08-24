@@ -5,6 +5,7 @@ import { rm } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
 import { Command } from 'commander';
 import { createDefaultRegistry } from './runtimes/default-registry.js';
+import { autoModelCandidates, modelChoiceLabel } from './runtimes/model-selection.js';
 import { RuntimeOrchestrator, workflowProgress, } from './runtimes/runtime-orchestrator.js';
 import { StateStore } from './state-store.js';
 import { roles } from './roles.js';
@@ -31,7 +32,7 @@ program
     .option('--fix-attempts <count>', 'maximum tester-fixer-retest cycles', '2')
     .option('--theme <name>', `color theme: ${THEME_NAMES.join(', ')}`)
     .option('--verbose', 'show low-level runtime activity')
-    .option('--runtime-terminal', 'show controlled real-runtime output in terminal windows')
+    .option('--runtime-terminal', 'show controlled real-runtime output in terminal windows (default)', true)
     .option('--no-runtime-terminal', 'run real-runtime processes headlessly');
 function options() {
     const value = program.opts();
@@ -100,20 +101,30 @@ async function resolveModel(runtime, root, requested) {
     if (requested) {
         if (!discovery.models.includes(requested))
             throw new Error(`Model '${requested}' was not reported as available by ${runtime.name}.`);
-        return requested;
+        return { model: requested };
     }
     if (discovery.message)
         process.stdout.write(`${discovery.message}\n`);
+    // Auto mode rotates through every provider, cheapest (free) models first.
+    const candidates = autoModelCandidates(discovery);
     if (!process.stdin.isTTY)
-        return undefined;
+        return candidates.length === 0 ? {} : { models: candidates };
     const selected = await choose('Choose a model:', [
-        { id: 'auto', name: 'Auto (provider chooses and may switch models)' },
-        ...discovery.models.map((model) => ({ id: model, name: model })),
+        {
+            id: 'auto',
+            name: candidates.length === 0
+                ? 'Auto (provider chooses and may switch models)'
+                : `Auto (${candidates.length} models across all providers, free first)`,
+        },
+        ...discovery.models.map((model) => ({
+            id: model,
+            name: modelChoiceLabel(model, discovery),
+        })),
     ]);
-    return selected === 'auto' ? undefined : selected;
+    if (selected !== 'auto')
+        return { model: selected };
+    return candidates.length === 0 ? {} : { models: candidates };
 }
-let rendered = false;
-let bannerShown = false;
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
 export function renderRuntimeState(state, root, verbose = false) {
     const latest = new Map(state.events.map((event) => [event.roleId, event.status]));
@@ -129,6 +140,7 @@ export function renderRuntimeState(state, root, verbose = false) {
         `AI DEV TEAM  ${state.status}`,
         `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}] ${progress.completed}/${progress.total}`,
         `Path: ${root}`,
+        `Model: ${state.model ?? 'runtime default'}`,
         `Phase: ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  Attempt: ${attempt}`,
         ...roles.map((role) => `${role.name.padEnd(19)} ${latest.get(role.id) ?? 'WAITING'}`),
         `Latest: ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 180)}` : 'Waiting'}`,
@@ -136,20 +148,45 @@ export function renderRuntimeState(state, root, verbose = false) {
     ];
     if (state.status !== 'RUNNING') {
         const failures = state.events.filter((candidate) => candidate.status === 'FAILED');
-        lines.push(`Summary: ${state.status === 'DONE' ? 'Implementation, verification, and review completed.' : `${failures.length} terminal failure(s); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`}`);
+        const failedRoles = [...new Set(failures.map((event) => event.roleId))];
+        lines.push(`Summary: ${state.status === 'DONE' ? 'Implementation, verification, and review completed.' : `${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`}`);
+        const rootCause = failures.at(-1);
+        if (rootCause !== undefined)
+            lines.push(`Root cause: ${rootCause.roleId}: ${(rootCause.message.split('\n')[0] ?? '').slice(0, 480)}`);
     }
     return lines.join('\n') + '\n';
 }
-function render(state) {
+let live = false;
+function frame(state) {
     const config = options();
     const theme = currentTheme();
-    if (process.stdout.isTTY && rendered)
-        process.stdout.write('\x1B[H\x1B[2J');
-    const showBanner = Boolean(process.stdout.isTTY) || !bannerShown;
-    rendered = true;
-    bannerShown = true;
-    process.stdout.write(`${showBanner ? renderBanner(theme, VERSION) : ''}${renderDashboard(state, config.root, theme, { verbose: config.verbose })}\n`);
+    const dashboard = renderDashboard(state, config.root, theme, {
+        verbose: config.verbose,
+        ...(process.stdout.columns ? { maxWidth: process.stdout.columns } : {}),
+    });
+    return `${renderBanner(theme, VERSION)}${dashboard}\n`;
 }
+// The live dashboard redraws in place on the alternate screen buffer (like
+// htop): updates never accumulate in the scrollback, and the terminal content
+// from before the run is restored when the run ends.
+function render(state) {
+    if (!process.stdout.isTTY)
+        return; // the final frame is printed once after the run
+    if (!live) {
+        process.stdout.write('\x1B[?1049h\x1B[?25l');
+        live = true;
+    }
+    // Home + erase the whole alternate screen before drawing: the frame width
+    // varies with activity content, so overwriting alone leaves stale fragments.
+    process.stdout.write(`\x1B[H\x1B[2J${frame(state)}`);
+}
+function stopLive() {
+    if (!live)
+        return;
+    live = false;
+    process.stdout.write('\x1B[?25h\x1B[?1049l');
+}
+process.on('exit', stopLive);
 async function ensureRuntime(runtimeId, approval) {
     const runtime = createDefaultRegistry().get(runtimeId);
     let detection = await runtime.detect();
@@ -199,17 +236,17 @@ async function run(goal) {
     await validateProjectRoot(config.root);
     const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime);
     const runtime = await ensureRuntime(runtimeId, approval);
-    const model = await resolveModel(runtime, config.root, config.model ?? saved.model);
+    const selection = await resolveModel(runtime, config.root, config.model ?? saved.model);
     const task = await resolveGoal(goal);
     if (!task)
         throw new Error('Task cannot be empty.');
     process.stdout.write(renderBanner(sessionTheme, VERSION));
-    bannerShown = true;
     const store = new StateStore(config.root);
     const orchestrator = new RuntimeOrchestrator({
         root: config.root,
         runtime,
-        ...(model === undefined ? {} : { model }),
+        ...(selection.model === undefined ? {} : { model: selection.model }),
+        ...(selection.models === undefined ? {} : { models: selection.models }),
         visibleRuntime: config.runtimeTerminal && runtime.id !== 'mock',
         maxAgentAttempts: config.maxAgentAttempts,
         retryBackoffMs: config.retryBackoffMs,
@@ -222,8 +259,16 @@ async function run(goal) {
             process.stderr.write(`[ WARNING ] State persistence failed: ${error instanceof Error ? error.message : String(error)}\n`);
         },
     });
-    const state = await orchestrator.run(task);
-    await recordHistory(config.root, task, state, model);
+    let state;
+    try {
+        state = await orchestrator.run(task);
+    }
+    finally {
+        stopLive();
+    }
+    // Leave one final frame in the normal buffer as the persistent run record.
+    process.stdout.write(frame(state));
+    await recordHistory(config.root, task, state, selection.model);
     process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
 program
@@ -257,7 +302,7 @@ program
     const state = await new StateStore(options().root).load();
     if (!state)
         throw new Error('No saved workflow.');
-    render(state);
+    process.stdout.write(frame(state));
 });
 program
     .command('agents')

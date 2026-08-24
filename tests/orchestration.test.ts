@@ -302,6 +302,64 @@ describe('runtime orchestration', () => {
     expect(failed[0]?.message).toMatch(/Retry limit exhausted/);
   });
 
+  it('fails fast on fatal provider errors without retrying or launching later stages', async () => {
+    const runtime = new RecordingRuntime({
+      architect: [
+        { kind: 'failure', output: 'OpenCode exited with code 1: APIError (HTTP 402): free quota exhausted.' },
+      ],
+    });
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      maxAgentAttempts: 3,
+      retryBackoffMs: 0,
+    }).run('Build a TODO API');
+    expect(runtime.launchedRoleIds.filter((roleId) => roleId === 'architect')).toHaveLength(1);
+    expect(state.events.some((event) => event.status === 'RETRYING')).toBe(false);
+    const fatal = state.events.find(
+      (event) => event.roleId === 'architect' && event.status === 'FAILED',
+    );
+    expect(fatal?.message).toMatch(/Fatal runtime failure.*HTTP 402.*quota/s);
+    for (const roleId of ['backend', 'tester', 'reviewer']) {
+      expect(
+        state.events.find((event) => event.roleId === roleId && event.status === 'SKIPPED'),
+      ).toBeDefined();
+    }
+    expect(state.status).toBe('FAILED');
+  });
+
+  it('rotates to the next Auto candidate on fatal errors and completes the stage', async () => {
+    const runtime = new RecordingRuntime({
+      backend: [
+        {
+          kind: 'failure',
+          output: 'OpenCode exited with code 1: APIError (HTTP 402): quota exhausted.',
+        },
+        { kind: 'success', output: 'api' },
+      ],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      models: ['paid/provider', 'opencode/hy3-free'],
+      maxAgentAttempts: 3,
+      retryBackoffMs: 0,
+    }).run('Build a TODO API');
+    expect(state.status).toBe('DONE');
+    const backendExecutions = runtime.executions.filter((entry) => entry.roleId === 'backend');
+    expect(backendExecutions).toHaveLength(2);
+    expect(backendExecutions[0]?.request.model).toBe('paid/provider');
+    expect(backendExecutions[1]?.request.model).toBe('opencode/hy3-free');
+    expect(state.model).toBe('opencode/hy3-free');
+    const switching = state.events.find(
+      (event) => event.roleId === 'backend' && event.status === 'RETRYING',
+    );
+    expect(switching?.message).toMatch(/Switching to opencode\/hy3-free/u);
+    // Later stages keep using the model that worked.
+    expect(runtime.executions.at(-1)?.request.model).toBe('opencode/hy3-free');
+  });
+
   it('keeps the manager read-only through a real Codex adapter', async () => {
     const captured: string[][] = [];
     const run = vi.fn<ProcessRunner>(async (_command, args) => {

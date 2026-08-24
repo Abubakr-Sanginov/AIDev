@@ -4,18 +4,11 @@ import path from 'node:path';
 import { buildLogFollowerOptions } from '../../terminal/log-follower.js';
 import { runProcess } from '../process.js';
 export function buildCodexExecArgs(request) {
+    // The prompt itself is piped through stdin (see execute): Windows cmd.exe
+    // shims reject command lines longer than 8191 characters.
     const modelArgs = request.model ? ['--model', request.model] : [];
     if (request.resumeSessionId)
-        return [
-            'exec',
-            'resume',
-            '--json',
-            '--color',
-            'never',
-            ...modelArgs,
-            request.resumeSessionId,
-            request.prompt,
-        ];
+        return ['exec', 'resume', '--json', '--color', 'never', ...modelArgs, request.resumeSessionId];
     return [
         'exec',
         '--json',
@@ -24,7 +17,6 @@ export function buildCodexExecArgs(request) {
         '--sandbox',
         request.toolPolicy === 'read-only' ? 'read-only' : 'workspace-write',
         ...modelArgs,
-        request.prompt,
     ];
 }
 export function parseCodexJsonEvents(stdout) {
@@ -158,7 +150,7 @@ export class CodexRuntime {
             const line = text.split(/\r?\n/u).find((item) => item.trim());
             if (line)
                 await request.onActivity?.({ type: 'output', message: line.trim().slice(0, 160) });
-        });
+        }, effective.prompt);
         if (session.outputFile)
             await appendFile(session.outputFile, `\n[ ${result.code === 0 ? 'COMPLETED' : 'FAILED'} ] Controlled Codex process exited with code ${result.code}.\n`, 'utf8');
         if (result.code !== 0) {

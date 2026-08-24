@@ -1,10 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildOpenCodeRunArgs,
+  formatOpenCodeLogLine,
   OpenCodeRuntime,
   parseOpenCodeJsonEvents,
+  parseOpenCodeVerboseModels,
   summarizeOpenCodeFailure,
 } from '../src/runtimes/opencode/runtime.js';
+import { autoModelCandidates } from '../src/runtimes/model-selection.js';
+import { isFatalDiagnostic } from '../src/runtimes/failure-policy.js';
 import type { ProcessRunner } from '../src/runtimes/process.js';
 import type {
   TerminalLauncher,
@@ -78,17 +82,84 @@ describe('OpenCodeRuntime', () => {
     ]);
   });
 
-  it('discovers only models reported by the installed OpenCode CLI', async () => {
+  it('discovers models with cost metadata and marks the free tier', async () => {
+    const verbose = [
+      'standardcompute/standardcompute',
+      '{',
+      '  "id": "standardcompute",',
+      '  "providerID": "standardcompute",',
+      '  "cost": { "input": 0.5, "output": 1.5, "cache": { "read": 0, "write": 0 } },',
+      '}',
+      'opencode/big-pickle',
+      '{',
+      '  "id": "big-pickle",',
+      '  "providerID": "opencode",',
+      '  "cost": { "input": 0, "output": 0 },',
+      '}',
+      'opencode/hy3-free',
+      '{',
+      '  "id": "hy3-free",',
+      '  "providerID": "opencode"',
+      '}',
+    ].join('\n');
     const run = runner(async (_command, args) => ({
       code: 0,
-      stdout: args[0] === 'models' ? 'anthropic/one\nopenai/two\nanthropic/one\n' : '',
+      stdout: args.includes('--verbose') ? verbose : '',
+      stderr: '',
+    }));
+    const runtime = new OpenCodeRuntime(new TestTerminal(), run);
+    await expect(runtime.discoverModels('C:\\work')).resolves.toEqual({
+      models: ['standardcompute/standardcompute', 'opencode/big-pickle', 'opencode/hy3-free'],
+      freeModels: ['opencode/big-pickle', 'opencode/hy3-free'],
+    });
+    expect(run).toHaveBeenCalledWith('opencode', ['models', '--verbose'], 'C:\\work', 60_000);
+  });
+
+  it('falls back to plain model listing when verbose output is unsupported', async () => {
+    const run = runner(async (_command, args) => ({
+      code: 0,
+      stdout: args[0] === 'models' && !args.includes('--verbose')
+        ? 'anthropic/one\nopenai/two\nanthropic/one\n'
+        : '',
       stderr: '',
     }));
     const runtime = new OpenCodeRuntime(new TestTerminal(), run);
     await expect(runtime.discoverModels('C:\\work')).resolves.toEqual({
       models: ['anthropic/one', 'openai/two'],
     });
-    expect(run).toHaveBeenCalledWith('opencode', ['models'], 'C:\\work', 30_000);
+  });
+
+  it('parses verbose model blocks and detects zero-cost tiers', () => {
+    const infos = parseOpenCodeVerboseModels(
+      [
+        'a/paid',
+        '{ "id": "paid", "cost": { "input": 3, "output": 15 } }',
+        'opencode/big-pickle',
+        '{\n  "id": "big-pickle",\n  "providerID": "opencode",\n  "cost": {\n    "input": 0,\n    "output": 0\n  }\n}',
+        'c/suffix-free',
+        '{}',
+        'std/ambiguous',
+        '{\n  "id": "ambiguous",\n  "providerID": "std",\n  "cost": {\n    "input": 0,\n    "output": 0\n  }\n}',
+      ].join('\n'),
+    );
+    expect(infos).toEqual([
+      { id: 'a/paid', free: false },
+      { id: 'opencode/big-pickle', free: true },
+      { id: 'c/suffix-free', free: true },
+      // Custom providers report 0/0 when no pricing is published; that does
+      // not make them free-tier, so they sort after genuinely free models.
+      { id: 'std/ambiguous', free: false },
+    ]);
+  });
+
+  it('orders Auto candidates free-first across all providers', () => {
+    expect(
+      autoModelCandidates({
+        models: ['xpeach/claude-opus-5', 'opencode/hy3-free', 'oxalpha/ox-alpha'],
+        freeModels: ['opencode/hy3-free'],
+      }),
+    ).toEqual(['opencode/hy3-free', 'xpeach/claude-opus-5', 'oxalpha/ox-alpha']);
+    expect(autoModelCandidates({ models: ['only/one'] })).toEqual(['only/one']);
   });
 
   it('parses NDJSON events, text parts, and the session ID', () => {
@@ -127,6 +198,48 @@ describe('OpenCodeRuntime', () => {
     expect(summarizeOpenCodeFailure({ code: 7, stdout: '', stderr: 'provider failed' })).toBe(
       'provider failed',
     );
+  });
+
+  it('surfaces nested provider APIError details and the HTTP status', () => {
+    const stdout = JSON.stringify({
+      type: 'error',
+      timestamp: 1787538339460,
+      sessionID: 'ses_fce',
+      error: {
+        name: 'APIError',
+        data: {
+          message: 'That was the last of your free trial — add a plan to continue.',
+          statusCode: 402,
+          isRetryable: false,
+        },
+      },
+    });
+    expect(summarizeOpenCodeFailure({ code: 1, stdout, stderr: '' })).toBe(
+      'OpenCode exited with code 1: APIError (HTTP 402): That was the last of your free trial — add a plan to continue.',
+    );
+    expect(isFatalDiagnostic(summarizeOpenCodeFailure({ code: 1, stdout, stderr: '' }))).toBe(true);
+  });
+
+  it('formats log lines as human-readable timestamped events', () => {
+    const now = new Date('2026-08-24T10:20:30');
+    const stamp = new Date(1787538339460);
+    const time = stamp.toLocaleTimeString('en-GB', { hour12: false });
+    expect(
+      formatOpenCodeLogLine(JSON.stringify({ type: 'step_start', timestamp: 1787538339460 }), '', now),
+    ).toBe(`[${time}] step_start`);
+    expect(
+      formatOpenCodeLogLine(
+        JSON.stringify({
+          type: 'error',
+          timestamp: 1787538339460,
+          error: { name: 'APIError', data: { message: 'quota exhausted', statusCode: 402 } },
+        }),
+        '',
+        now,
+      ),
+    ).toContain('error: APIError (HTTP 402): quota exhausted');
+    expect(formatOpenCodeLogLine('plain diagnostic text', '', now)).toBe('plain diagnostic text');
+    expect(formatOpenCodeLogLine('   ', '', now)).toBeUndefined();
   });
 
   it('persists a returned session ID and resumes it on the next execution', async () => {

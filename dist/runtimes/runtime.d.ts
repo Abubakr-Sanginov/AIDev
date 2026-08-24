@@ -40,6 +40,8 @@ export interface AgentRequest {
 }
 export interface RuntimeModelDiscovery {
     models: string[];
+    /** Model IDs that cost nothing to run (free tier); Auto mode prefers them. */
+    freeModels?: string[];
     message?: string;
 }
 export interface RuntimeResult {

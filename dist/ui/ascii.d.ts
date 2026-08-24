@@ -15,7 +15,9 @@ export declare function resolveTheme(name?: string): Theme;
 export declare const BANNER_LINES: string[];
 export declare function renderBanner(theme: Theme, version: string): string;
 export declare function visibleWidth(text: string): number;
-export declare function panel(title: string, lines: string[], theme: Theme): string;
+/** Truncates a string to a visible width without breaking ANSI color sequences. */
+export declare function truncateVisible(text: string, width: number): string;
+export declare function panel(title: string, lines: string[], theme: Theme, maxWidth?: number): string;
 export declare function progressBar(completed: number, total: number, width?: number): string;
 export declare function statusBadge(status: string, theme: Theme): string;
 export declare const SPINNER_FRAMES: string[];
@@ -25,6 +27,7 @@ export declare function estimateEtaMs(completed: number, total: number, elapsedM
 export interface DashboardOptions {
     verbose?: boolean;
     now?: number;
+    maxWidth?: number;
 }
 export declare function renderDashboard(state: RuntimeWorkflowState, root: string, theme: Theme, options?: DashboardOptions): string;
-export declare function renderSummary(state: RuntimeWorkflowState, theme: Theme): string;
+export declare function renderSummary(state: RuntimeWorkflowState, theme: Theme, maxWidth?: number): string;
