@@ -18,6 +18,17 @@ The project does not bundle a model or manage credentials for external coding-ag
 - Themed ASCII dashboard with banner, progress bar, live spinner, and end-of-run summary
 - Diagnostics (`doctor`), run history (`history`), Markdown reports (`report`), persistent defaults (`config`), and state cleanup (`clean`)
 - Automatic per-project run history recorded to `.ai-dev-team/history.jsonl`
+- Bundled agent skills (skills.sh) wired into role prompts and published to `.ai-dev-team/skills`
+- Runtime state directories are appended to the target project's `.gitignore` automatically
+
+## What's new in 0.2.5–0.2.9
+
+1. Bundled agent skills wired into role prompts and published into the project for inspection
+2. Live dashboard redraws on the alternate screen buffer: one updating screen, no scrollback spam
+3. Agent prompts travel through stdin, so long orchestrated prompts no longer hit the Windows 8191-character command-line limit
+4. Localized Windows console output (CP866) is decoded correctly instead of showing mojibake
+5. OpenCode JSON error events surface as readable failure messages
+6. Workflow state directories are appended to the target project's `.gitignore` automatically
 
 ## What's new in 0.2.0
 
@@ -259,7 +270,7 @@ postman/        Non-secret Postman workspace globals definition
 
 ## State and environment data
 
-Workflow state is stored in `.ai-dev-team/` by the runtime-oriented CLI and `.ai-team/` by the provider-oriented orchestrator. These directories may contain prompts, plans, reports, and local project details; both are ignored by Git.
+Workflow state is stored in `.ai-dev-team/` by the runtime-oriented CLI and `.ai-team/` by the provider-oriented orchestrator. These directories may contain prompts, plans, reports, and local project details; when the project uses Git, the CLI appends both to the project `.gitignore` automatically.
 
 `NO_COLOR=1` disables colored terminal output. OpenCode's adapter temporarily supplies `OPENCODE_CONFIG_CONTENT` to enforce read-only permissions for selected roles and restores the previous process value afterward.
 

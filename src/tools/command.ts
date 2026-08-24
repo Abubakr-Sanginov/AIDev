@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
+import { decodeConsoleText } from '../runtimes/process.js';
 import type { Tool } from './tool.js';
 import { safePath } from './path.js';
 
@@ -73,7 +74,7 @@ export const runCommandTool: Tool<z.infer<typeof input>> = {
       });
       child.on('close', (code) => {
         clearTimeout(timer);
-        const output = Buffer.concat(chunks).toString('utf8');
+        const output = decodeConsoleText(Buffer.concat(chunks));
         if (code !== 0) reject(new Error(`Command exited with code ${code}.\n${output}`));
         else resolve(output || `Command completed with code ${code}.`);
       });

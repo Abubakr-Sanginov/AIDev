@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
@@ -152,3 +152,20 @@ it('never exposes partial JSON to concurrent readers during repeated replacement
     ),
   ).toEqual([]);
 }, 15_000);
+
+it('git-ignores the state directory in Git projects only', async () => {
+  const plain = await mkdtemp(path.join(tmpdir(), 'state-plain-'));
+  directories.push(plain);
+  await new StateStore(plain).initialize();
+  expect(await readdir(plain)).not.toContain('.gitignore');
+
+  const git = await mkdtemp(path.join(tmpdir(), 'state-git-'));
+  directories.push(git);
+  await mkdir(path.join(git, '.git'));
+  await writeFile(path.join(git, '.gitignore'), 'node_modules/\n', 'utf8');
+  const expected = 'node_modules/\n.ai-dev-team/\n.ai-team/\n';
+  await new StateStore(git).initialize();
+  expect(await readFile(path.join(git, '.gitignore'), 'utf8')).toBe(expected);
+  await new StateStore(git).initialize(); // stays idempotent across instances
+  expect(await readFile(path.join(git, '.gitignore'), 'utf8')).toBe(expected);
+});
