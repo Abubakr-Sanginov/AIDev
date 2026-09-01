@@ -64,7 +64,7 @@
     "@anthropic-ai/sdk": "^0.39.0",
     "@eslint/js": "^9.22.0",
     "@types/cross-spawn": "^6.0.6",
-    "@types/node": "^22.13.10",
+    "@types/node": "^26.4.0",
     "eslint": "^9.22.0",
     "prettier": "^3.5.3",
     "tsx": "^4.19.3",
