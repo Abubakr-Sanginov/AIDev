@@ -23,3 +23,6 @@ export { buildReport, writeReport } from './report.js';
 export { loadConfig, setConfigValue, resetConfig, configPath } from './config.js';
 export { appendRunRecord, listRunRecords, historyPath } from './history.js';
 export { BANNER_LINES, SPINNER_FRAMES, THEME_NAMES, estimateEtaMs, formatDuration, panel, progressBar, renderBanner, renderDashboard, renderSummary, resolveTheme, spinnerFrame, statusBadge, visibleWidth, } from './ui/ascii.js';
+export { hitTest } from './ui/ascii.js';
+export { renderActivityView, renderAgentView, renderGoalView, renderHelpView, wrapText, } from './ui/inspect.js';
+export { INITIAL_UI_STATE, parseTerminalInput, reduceUiEvent, } from './ui/interactive.js';

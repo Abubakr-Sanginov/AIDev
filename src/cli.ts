@@ -23,8 +23,21 @@ import {
   resolveTheme,
   statusBadge,
   THEME_NAMES,
+  truncateVisible,
   type Theme,
 } from './ui/ascii.js';
+import {
+  renderActivityView,
+  renderAgentView,
+  renderGoalView,
+  renderHelpView,
+} from './ui/inspect.js';
+import {
+  INITIAL_UI_STATE,
+  parseTerminalInput,
+  reduceUiEvent,
+  type UiState,
+} from './ui/interactive.js';
 import { loadConfig, resetConfig, setConfigValue, type CliConfig } from './config.js';
 import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
 import { runDoctor } from './doctor.js';
@@ -281,31 +294,135 @@ export function renderRuntimeState(
 
 let live = false;
 
-function frame(state: RuntimeWorkflowState): string {
+const uiState: UiState = { ...INITIAL_UI_STATE };
+let latestState: RuntimeWorkflowState | undefined;
+
+function bannerHeight(): number {
+  return renderBanner(currentTheme(), VERSION).split('\n').length - 1;
+}
+
+function paint(): void {
+  const state = latestState;
+  if (state === undefined) return;
   const config = options();
   const theme = currentTheme();
-  const dashboard = renderDashboard(state, config.root, theme, {
-    verbose: config.verbose,
-    ...(process.stdout.columns ? { maxWidth: process.stdout.columns } : {}),
-  });
-  return `${renderBanner(theme, VERSION)}${dashboard}\n`;
+  const columns = process.stdout.columns;
+  const rows = process.stdout.rows;
+  const viewport = { width: columns, height: Math.max(6, rows) };
+  let output: string;
+  if (uiState.view.kind === 'dashboard') {
+    uiState.hotspots.length = 0;
+    const dashboard = renderDashboard(state, config.root, theme, {
+      verbose: config.verbose,
+      maxWidth: columns,
+      hotspots: uiState.hotspots,
+      offsetY: bannerHeight(),
+    });
+    output = `${renderBanner(theme, VERSION)}${dashboard}\n`;
+  } else {
+    const overlay =
+      uiState.view.kind === 'goal'
+        ? renderGoalView(state, theme, viewport, uiState.scroll)
+        : uiState.view.kind === 'activity'
+          ? renderActivityView(state, theme, viewport, uiState.scroll)
+          : uiState.view.kind === 'agent'
+            ? renderAgentView(state, uiState.view.roleId, theme, viewport, uiState.scroll)
+            : renderHelpView(theme, viewport);
+    output = overlay.lines.map((line) => truncateVisible(line, columns)).join('\n') + '\n';
+  }
+  process.stdout.write(`\x1B[H\x1B[2J${output}`);
 }
 
 // The live dashboard redraws in place on the alternate screen buffer (like
 // htop): updates never accumulate in the scrollback, and the terminal content
 // from before the run is restored when the run ends.
 function render(state: RuntimeWorkflowState): void {
+  latestState = state;
   if (!process.stdout.isTTY) return; // the final frame is printed once after the run
   if (!live) {
     process.stdout.write('\x1B[?1049h\x1B[?25l');
     live = true;
+    attachInteractive();
   }
-  // Home + erase the whole alternate screen before drawing: the frame width
-  // varies with activity content, so overwriting alone leaves stale fragments.
-  process.stdout.write(`\x1B[H\x1B[2J${frame(state)}`);
+  paint();
+}
+
+/** Final frame printed once in the normal buffer as the persistent run record. */
+function finalFrame(state: RuntimeWorkflowState): string {
+  const theme = currentTheme();
+  const dashboard = renderDashboard(state, options().root, theme, {
+    verbose: options().verbose,
+    maxWidth: process.stdout.columns,
+  });
+  return `${renderBanner(theme, VERSION)}${dashboard}\n`;
+}
+
+let interactiveAttached = false;
+
+function handleTerminalInput(chunk: string): void {
+  let changed = false;
+  for (const event of parseTerminalInput(chunk)) {
+    const next = reduceUiEvent(uiState, event, Math.max(1, process.stdout.rows - 4));
+    if (next !== uiState) {
+      uiState.view = next.view;
+      uiState.scroll = next.scroll;
+      changed = true;
+    }
+  }
+  if (changed) paint();
+}
+
+function handleResize(): void {
+  if (live) paint();
+}
+
+function attachInteractive(): void {
+  if (interactiveAttached || !process.stdin.isTTY) return;
+  interactiveAttached = true;
+  // ?1000h enables button press reporting, ?1006h switches to SGR encoding so
+  // coordinates are not limited to 223 columns.
+  process.stdout.write('\x1B[?1000h\x1B[?1006h');
+  process.stdin.setRawMode(true);
+  process.stdin.resume();
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', handleTerminalInput);
+  process.stdout.on('resize', handleResize);
+}
+
+function detachInteractive(): void {
+  if (!interactiveAttached) return;
+  interactiveAttached = false;
+  process.stdout.write('\x1B[?1000l\x1B[?1006l');
+  process.stdin.off('data', handleTerminalInput);
+  process.stdout.off('resize', handleResize);
+  if (process.stdin.isTTY) {
+    process.stdin.setRawMode(false);
+    process.stdin.pause();
+  }
+}
+
+/** Modal prompts (approval, install confirmation) need the plain cooked stdin. */
+async function withInteractiveSuspended<T>(action: () => Promise<T>): Promise<T> {
+  const wasLive = live;
+  if (wasLive) {
+    detachInteractive();
+    process.stdout.write('\x1B[?25h\x1B[?1049l');
+    live = false;
+  }
+  try {
+    return await action();
+  } finally {
+    if (wasLive) {
+      process.stdout.write('\x1B[?1049h\x1B[?25l');
+      live = true;
+      attachInteractive();
+      paint();
+    }
+  }
 }
 
 function stopLive(): void {
+  detachInteractive();
   if (!live) return;
   live = false;
   process.stdout.write('\x1B[?25h\x1B[?1049l');
@@ -316,7 +433,7 @@ process.on('exit', stopLive);
 async function ensureRuntime(runtimeId: string, approval: ApprovalMode, root?: string) {
   const registry = await createDefaultRegistry({
     ...(root === undefined ? {} : { root }),
-    approve: createApprover(approval),
+    approve: (command) => withInteractiveSuspended(() => createApprover(approval)(command)),
   });
   const runtime = registry.get(runtimeId);
   let detection = await runtime.detect();
@@ -425,7 +542,7 @@ async function run(goal?: string): Promise<void> {
     stopLive();
   }
   // Leave one final frame in the normal buffer as the persistent run record.
-  process.stdout.write(frame(state));
+  process.stdout.write(finalFrame(state));
   await recordHistory(config.root, task, state, selection.model);
   process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
@@ -459,7 +576,7 @@ program
   .action(async () => {
     const state = await new StateStore(options().root).load();
     if (!state) throw new Error('No saved workflow.');
-    process.stdout.write(frame(state));
+    process.stdout.write(finalFrame(state));
   });
 program
   .command('agents')

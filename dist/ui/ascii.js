@@ -178,6 +178,15 @@ export function estimateEtaMs(completed, total, elapsedMs) {
     return Math.round((elapsedMs / completed) * (total - completed));
 }
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
+/** Returns the id of the innermost region containing the point, if any. */
+export function hitTest(rects, x, y) {
+    let match;
+    for (const rect of rects) {
+        if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom)
+            match = rect.id;
+    }
+    return match;
+}
 export function renderDashboard(state, root, theme, options = {}) {
     const completed = state.completedPhases ?? 0;
     const total = state.totalPhases ?? 5;
@@ -187,12 +196,29 @@ export function renderDashboard(state, root, theme, options = {}) {
     const elapsedMs = Number.isNaN(startedMs) ? 0 : Math.max(0, finishedMs - startedMs);
     const eta = estimateEtaMs(completed, total, elapsedMs);
     const latest = new Map(state.events.map((event) => [event.roleId, event.status]));
-    const event = [...state.events]
-        .reverse()
-        .find((candidate) => options.verbose || !LOW_VALUE_ACTIVITY.test(candidate.message));
+    const visibleEvents = state.events.filter((candidate) => options.verbose || !LOW_VALUE_ACTIVITY.test(candidate.message));
+    const event = [...visibleEvents].reverse()[0];
+    const previous = [...visibleEvents].reverse()[1];
     const retry = [...state.events].reverse().find((candidate) => candidate.status === 'RETRYING');
     const attempt = event?.attempt ? `${event.attempt}/${event.maxAttempts ?? event.attempt}` : '-';
     const spinner = state.status === 'RUNNING' ? `${spinnerFrame(now)} ` : '';
+    const lastEvent = state.events.at(-1);
+    const lastEventMs = lastEvent?.timestamp === undefined ? Number.NaN : Date.parse(lastEvent.timestamp);
+    const idleMs = Number.isNaN(lastEventMs) ? undefined : Math.max(0, now - lastEventMs);
+    const hotspots = options.hotspots;
+    let cursorY = options.offsetY ?? 0;
+    const place = (id, block, rowIds) => {
+        const lines = block.split('\n');
+        const width = Math.max(0, ...lines.map((line) => visibleWidth(line)));
+        hotspots?.push({ id, top: cursorY + 1, left: 1, bottom: cursorY + lines.length, right: width });
+        // Content rows sit one line below the top border, one per entry.
+        rowIds?.forEach((rowId, index) => {
+            const y = cursorY + 2 + index;
+            hotspots?.push({ id: rowId, top: y, left: 2, bottom: y, right: width - 1 });
+        });
+        cursorY += lines.length;
+        return block;
+    };
     const overview = panel('Overview', [
         `${spinner}${theme.secondary('Status:')} ${statusBadge(state.status, theme)}   ${theme.secondary('Elapsed:')} ${formatDuration(elapsedMs)}${eta === undefined ? '' : `   ${theme.secondary('ETA:')} ~${formatDuration(eta)}`}`,
         `${theme.accent(progressBar(completed, total))} ${theme.muted(`(${completed}/${total} phases)`)}`,
@@ -200,15 +226,27 @@ export function renderDashboard(state, root, theme, options = {}) {
         `${theme.secondary('Path:')}  ${root}`,
         `${theme.secondary('Model:')} ${state.model ?? theme.muted('runtime default')}`,
         `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
+        theme.muted('Clicks: this panel, Activity, agent rows · keys: g a h 1-8 · Esc closes'),
     ], theme, options.maxWidth);
     const agents = panel('Agents', roles.map((role) => ` ${theme.accent('▸')} ${role.name.padEnd(19)} ${statusBadge(latest.get(role.id) ?? 'WAITING', theme)}`), theme, options.maxWidth);
+    const idleLabel = idleMs === undefined
+        ? 'unknown'
+        : idleMs > 60_000
+            ? theme.accent(`${formatDuration(idleMs)} — model is still generating, no new events yet`)
+            : formatDuration(idleMs);
     const activity = panel('Activity', [
         `${theme.secondary('Latest:')} ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 120)}` : 'Waiting'}`,
+        `${theme.secondary('Prev:')}   ${previous ? `${previous.roleId}: ${(previous.message.split('\n')[0] ?? '').slice(0, 120)}` : '-'}`,
         `${theme.secondary('Retry:')}  ${retry ? (retry.message.split('\n')[0] ?? '').slice(0, 120) : 'none'}`,
+        `${theme.secondary('Idle:')}   ${idleLabel}   ${theme.secondary('Events:')} ${state.events.length}`,
     ], theme, options.maxWidth);
-    const sections = [overview, agents, activity];
+    const sections = [
+        place('overview', overview),
+        place('agents', agents, roles.map((role) => `agent:${role.id}`)),
+        place('activity', activity),
+    ];
     if (state.status !== 'RUNNING')
-        sections.push(renderSummary(state, theme, options.maxWidth));
+        sections.push(place('summary', renderSummary(state, theme, options.maxWidth)));
     return sections.join('\n');
 }
 export function renderSummary(state, theme, maxWidth) {

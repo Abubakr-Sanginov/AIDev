@@ -67,5 +67,23 @@ export {
   visibleWidth,
 } from './ui/ascii.js';
 export type { DashboardOptions, Theme, ThemeName } from './ui/ascii.js';
+export { hitTest, type Rect } from './ui/ascii.js';
+export {
+  renderActivityView,
+  renderAgentView,
+  renderGoalView,
+  renderHelpView,
+  wrapText,
+  type OverlayView,
+  type Viewport,
+} from './ui/inspect.js';
+export {
+  INITIAL_UI_STATE,
+  parseTerminalInput,
+  reduceUiEvent,
+  type TerminalEvent,
+  type UiState,
+  type ViewKind,
+} from './ui/interactive.js';
 export type * from './types.js';
 export type * from './runtimes/runtime.js';

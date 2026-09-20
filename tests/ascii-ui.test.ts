@@ -6,6 +6,7 @@ import {
   BANNER_LINES,
   estimateEtaMs,
   formatDuration,
+  hitTest,
   panel,
   progressBar,
   renderBanner,
@@ -14,7 +15,20 @@ import {
   spinnerFrame,
   statusBadge,
   truncateVisible,
+  type Rect,
 } from '../src/ui/ascii.js';
+import {
+  renderActivityView,
+  renderAgentView,
+  renderGoalView,
+  renderHelpView,
+  wrapText,
+} from '../src/ui/inspect.js';
+import {
+  INITIAL_UI_STATE,
+  parseTerminalInput,
+  reduceUiEvent,
+} from '../src/ui/interactive.js';
 import { loadConfig, resetConfig, setConfigValue } from '../src/config.js';
 import { appendRunRecord, listRunRecords } from '../src/history.js';
 import { buildReport } from '../src/report.js';
@@ -57,6 +71,128 @@ function sampleState(overrides: Partial<RuntimeWorkflowState> = {}): RuntimeWork
     ...overrides,
   };
 }
+
+describe('interactive ui', () => {
+  it('parses SGR mouse reports and control keys from a raw stdin chunk', () => {
+    const events = parseTerminalInput('\x1B[<0;12;9M\x1B[<64;5;3Mq\x1B[B\x1B[5~');
+    expect(events).toEqual([
+      { type: 'mouse', button: 'left', x: 12, y: 9 },
+      { type: 'mouse', button: 'wheel-up', x: 5, y: 3 },
+      { type: 'key', key: 'q' },
+      { type: 'key', key: 'arrow-down' },
+      { type: 'key', key: 'page-up' },
+    ]);
+  });
+
+  it('opens views from dashboard hotspots and closes them with Esc or a click', () => {
+    const hotspots: Rect[] = [
+      { id: 'overview', top: 1, left: 1, bottom: 8, right: 60 },
+      { id: 'agent:coder', top: 12, left: 2, bottom: 12, right: 30 },
+    ];
+    const openedGoal = reduceUiEvent(
+      { ...INITIAL_UI_STATE, hotspots },
+      { type: 'mouse', button: 'left', x: 5, y: 3 },
+      10,
+    );
+    expect(openedGoal.view).toEqual({ kind: 'goal' });
+    const openedAgent = reduceUiEvent(
+      { ...INITIAL_UI_STATE, hotspots },
+      { type: 'mouse', button: 'left', x: 10, y: 12 },
+      10,
+    );
+    expect(openedAgent.view).toEqual({ kind: 'agent', roleId: 'coder' });
+    const closed = reduceUiEvent(openedGoal, { type: 'key', key: 'escape' }, 10);
+    expect(closed.view).toEqual({ kind: 'dashboard' });
+    const closedByClick = reduceUiEvent(
+      openedAgent,
+      { type: 'mouse', button: 'left', x: 2, y: 2 },
+      10,
+    );
+    expect(closedByClick.view).toEqual({ kind: 'dashboard' });
+  });
+
+  it('opens the activity view with the a key and scrolls overlays', () => {
+    const opened = reduceUiEvent(INITIAL_UI_STATE, { type: 'key', key: 'a' }, 10);
+    expect(opened.view).toEqual({ kind: 'activity' });
+    const scrolled = reduceUiEvent(opened, { type: 'key', key: 'page-up' }, 10);
+    expect(scrolled.scroll).toBe(10);
+    const clamped = reduceUiEvent(scrolled, { type: 'mouse', button: 'wheel-down', x: 1, y: 1 }, 10);
+    expect(clamped.scroll).toBe(7);
+    const digit = reduceUiEvent(INITIAL_UI_STATE, { type: 'key', key: '2' }, 10);
+    expect(digit.view).toEqual({ kind: 'agent', roleId: 'architect' });
+  });
+
+  it('wraps long unspaced tokens without losing characters', () => {
+    const wrapped = wrapText('x'.repeat(25) + ' tail', 10);
+    expect(wrapped).toEqual(['x'.repeat(10), 'x'.repeat(10), 'xxxxx tail']);
+  });
+
+  it('renders the goal view with the full request and per-role statuses', () => {
+    const state = sampleState({
+      goal: 'A very long goal '.repeat(20).trim(),
+      status: 'RUNNING',
+    });
+    const view = renderGoalView(state, mono, { width: 80, height: 20 }, 0);
+    expect(view.lines).toHaveLength(20);
+    const goalLines = view.lines.filter((line) => line.includes('A very long goal'));
+    expect(goalLines.length).toBeGreaterThan(1); // wrapped, not truncated
+    expect(view.lines.some((line) => line.includes('Per-role last message'))).toBe(true);
+  });
+
+  it('renders the full activity history with timestamps and indices', () => {
+    const state = sampleState();
+    const view = renderActivityView(state, mono, { width: 80, height: 10 }, 0);
+    expect(view.total).toBe(2);
+    const text = view.lines.join('\n');
+    expect(text).toContain('#001');
+    expect(text).toContain('manager');
+    expect(text).toContain('VERDICT: PASS');
+  });
+
+  it('renders the agent view with budget, events, and sessions', () => {
+    const state = sampleState({
+      sessions: [
+        {
+          id: 'session-123456',
+          runtimeId: 'mock',
+          roleId: 'tester',
+          workingDirectory: '.',
+          status: 'completed',
+          createdAt: '2026-08-21T10:00:30.000Z',
+        },
+      ],
+    });
+    const view = renderAgentView(state, 'tester', mono, { width: 80, height: 20 }, 0);
+    const text = view.lines.join('\n');
+    expect(text).toContain('Tester — details');
+    expect(text).toContain('read-only');
+    expect(text).toContain('session-');
+    expect(text).toContain('VERDICT: PASS');
+  });
+
+  it('renders the help view with click and key references', () => {
+    const view = renderHelpView(mono, { width: 80, height: 20 });
+    const text = view.lines.join('\n');
+    expect(text).toContain('Mouse');
+    expect(text).toContain('click Overview');
+    expect(text).toContain('Esc');
+  });
+
+  it('collects dashboard hotspots for the panels and every agent row', () => {
+    const hotspots: Rect[] = [];
+    renderDashboard(sampleState(), '/tmp/project', mono, { hotspots, offsetY: 7 });
+    const ids = hotspots.map((rect) => rect.id);
+    expect(ids).toContain('overview');
+    expect(ids).toContain('activity');
+    expect(ids).toContain('agents');
+    expect(ids).toContain('agent:manager');
+    expect(ids).toContain('agent:reviewer');
+    const manager = hotspots.find((rect) => rect.id === 'agent:manager');
+    expect(manager?.top).toBe(18); // banner (7) + overview panel (9) + border (1) + row (1)
+    expect(hitTest(hotspots, 5, 18)).toBe('agent:manager');
+    expect(hitTest(hotspots, 5, 9)).toBe('overview');
+  });
+});
 
 describe('ascii ui', () => {
   it('renders the banner art with a subtitle and version', () => {

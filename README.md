@@ -59,6 +59,10 @@ A normal run follows this sequence:
 
 Non-implementing runtime roles use read-only policies where the selected CLI supports them. Implementing roles receive coding access subject to the project's command and approval safeguards. See [Runtime adapters](docs/runtimes.md) and [Adding a runtime](docs/adding-runtime.md).
 
+### Live dashboard interactions
+
+While a workflow runs, the dashboard is fully interactive. Click **Overview/Goal** to see the complete request text wrapped (never truncated), click the **Activity** panel for the entire event history with timestamps, click any **agent row** to open that role's details (budget, file access, every event, sessions), and press **h** for the help overlay. Overlays scroll with the mouse wheel, ↑/↓, PgUp/PgDn, Home/End; a click inside an open view or **Esc** returns to the dashboard. The dashboard also surfaces `Idle` (time since the last event) and the previous activity line, so a stalled provider is visible at a glance. Everything runs on the alternate screen buffer, and mouse input is suspended automatically while approval prompts need the keyboard.
+
 ### Failure semantics
 
 A role is reported as `FAILED` only when the cause is on the provider side: rate limits, HTTP 4xx/5xx responses, timeouts, offline networks, or fatal billing/quota/authentication errors. Anything the CLI itself can cause — exhausted internal budgets, missing artifacts, verification mismatches, declined approvals — is reported as a recovery event (`Recovery policy: …`) and the workflow keeps going, so a healthy provider is never blamed for our own limits. The live dashboard repaints on every event and on a fast heartbeat, while state is persisted to disk through a small throttle.

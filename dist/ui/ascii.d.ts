@@ -24,10 +24,24 @@ export declare const SPINNER_FRAMES: string[];
 export declare function spinnerFrame(now?: number, intervalMs?: number): string;
 export declare function formatDuration(milliseconds: number): string;
 export declare function estimateEtaMs(completed: number, total: number, elapsedMs: number): number | undefined;
+/** Clickable screen region, 1-based, inclusive. */
+export interface Rect {
+    id: string;
+    top: number;
+    left: number;
+    bottom: number;
+    right: number;
+}
+/** Returns the id of the innermost region containing the point, if any. */
+export declare function hitTest(rects: readonly Rect[], x: number, y: number): string | undefined;
 export interface DashboardOptions {
     verbose?: boolean;
     now?: number;
     maxWidth?: number;
+    /** Filled with clickable regions while the dashboard is rendered. */
+    hotspots?: Rect[];
+    /** Screen lines already printed above the dashboard (banner height). */
+    offsetY?: number;
 }
 export declare function renderDashboard(state: RuntimeWorkflowState, root: string, theme: Theme, options?: DashboardOptions): string;
 export declare function renderSummary(state: RuntimeWorkflowState, theme: Theme, maxWidth?: number): string;

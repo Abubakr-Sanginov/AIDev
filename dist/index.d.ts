@@ -32,5 +32,8 @@ export { appendRunRecord, listRunRecords, historyPath } from './history.js';
 export type { RunRecord } from './history.js';
 export { BANNER_LINES, SPINNER_FRAMES, THEME_NAMES, estimateEtaMs, formatDuration, panel, progressBar, renderBanner, renderDashboard, renderSummary, resolveTheme, spinnerFrame, statusBadge, visibleWidth, } from './ui/ascii.js';
 export type { DashboardOptions, Theme, ThemeName } from './ui/ascii.js';
+export { hitTest, type Rect } from './ui/ascii.js';
+export { renderActivityView, renderAgentView, renderGoalView, renderHelpView, wrapText, type OverlayView, type Viewport, } from './ui/inspect.js';
+export { INITIAL_UI_STATE, parseTerminalInput, reduceUiEvent, type TerminalEvent, type UiState, type ViewKind, } from './ui/interactive.js';
 export type * from './types.js';
 export type * from './runtimes/runtime.js';
