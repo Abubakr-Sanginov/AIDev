@@ -220,7 +220,7 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
     expect(String(toolMessage?.content)).toContain('not allowed in read-only mode');
   });
 
-  it('enforces maxToolCalls by failing the execution', async () => {
+  it('warns at the soft tool-call budget instead of failing', async () => {
     const root = await tempRoot();
     await writeFile(path.join(root, 'note.txt'), 'data', 'utf8');
     const stored = await setupProvider(root, 'openai');
@@ -243,14 +243,88 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
         ],
       },
     });
-    const { fetchImpl } = fakeFetch([toolCallReply('c1'), toolCallReply('c2')]);
+    const { fetchImpl, calls } = fakeFetch([
+      toolCallReply('c1'),
+      toolCallReply('c2'),
+      { payload: { choices: [{ message: { role: 'assistant', content: 'Wrapped up.' } }] } },
+    ]);
     const runtime = new ApiProviderRuntime(stored, { root, fetchImpl });
     const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
-    const error = await runtime
-      .execute(session, { prompt: 'loop', maxToolCalls: 1, maxSteps: 10 })
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('Tool call budget exhausted');
+    const result = await runtime.execute(session, {
+      prompt: 'loop',
+      maxToolCalls: 1,
+      maxSteps: 10,
+    });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('Wrapped up.');
+    expect(calls).toHaveLength(3);
+    // After crossing the soft budget the model receives a wrap-up warning
+    // instead of a hard failure.
+    const lastMessages = calls[2]?.body.messages as Record<string, unknown>[];
+    expect(
+      lastMessages.some(
+        (message) => message.role === 'user' && String(message.content).includes('Budget warning'),
+      ),
+    ).toBe(true);
+  });
+
+  it('replays identical tool calls from cache instead of re-executing them', async () => {
+    const root = await tempRoot();
+    await writeFile(path.join(root, 'note.txt'), 'data', 'utf8');
+    const stored = await setupProvider(root, 'openai');
+    const { fetchImpl, calls } = fakeFetch([
+      {
+        payload: {
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content: null,
+                tool_calls: [
+                  {
+                    id: 'c1',
+                    type: 'function',
+                    function: { name: 'read_file', arguments: '{"path":"note.txt"}' },
+                  },
+                  {
+                    id: 'c2',
+                    type: 'function',
+                    function: { name: 'read_file', arguments: '{"path":"note.txt"}' },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      { payload: { choices: [{ message: { role: 'assistant', content: 'Done.' } }] } },
+    ]);
+    const runtime = new ApiProviderRuntime(stored, { root, fetchImpl });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
+    const result = await runtime.execute(session, { prompt: 'read twice' });
+    expect(result.success).toBe(true);
+    const messages = calls[1]?.body.messages as Record<string, unknown>[];
+    const toolMessages = messages.filter((message) => message.role === 'tool');
+    expect(toolMessages).toHaveLength(2);
+    expect(toolMessages[0]?.content).toBe('data');
+    expect(toolMessages[1]?.content).toBe('data');
+  });
+
+  it('sends no tool schemas when the role has a zero tool budget', async () => {
+    const root = await tempRoot();
+    const stored = await setupProvider(root, 'openai');
+    const { fetchImpl, calls } = fakeFetch([
+      { payload: { choices: [{ message: { role: 'assistant', content: 'Plan only.' } }] } },
+    ]);
+    const runtime = new ApiProviderRuntime(stored, { root, fetchImpl });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'manager' });
+    const result = await runtime.execute(session, {
+      prompt: 'Plan the project.',
+      maxToolCalls: 0,
+    });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('Plan only.');
+    expect(calls[0]?.body.tools).toBeUndefined();
   });
 });
 

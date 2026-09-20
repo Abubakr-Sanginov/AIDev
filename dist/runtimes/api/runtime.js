@@ -107,17 +107,43 @@ export class ApiProviderRuntime {
             // the CLI, so the tool layer is always available at runtime.
             const toolsModule = toolsIndex;
             const tools = selectTools(toolsModule.allTools, request.toolPolicy);
-            const schemas = toolsForProtocol(this.#provider.protocol, tools);
+            // Token economy: a role with a zero tool budget (e.g. manager) gets no
+            // tool schemas at all, so the model answers in one cheap completion.
+            const schemas = request.maxToolCalls === 0
+                ? []
+                : toolsForProtocol(this.#provider.protocol, tools);
             const model = request.model ?? this.#provider.models[0] ?? 'default';
-            const maxSteps = request.maxSteps ?? 10;
-            const maxToolCalls = request.maxToolCalls ?? Number.POSITIVE_INFINITY;
+            // Soft budgets: near the ceiling the model is told to wrap up instead of
+            // being cut off mid-work; only the safety ceilings force a hard stop.
+            const softSteps = request.maxSteps ?? 10;
+            const softCalls = request.maxToolCalls ?? Number.POSITIVE_INFINITY;
+            const hardSteps = Math.max(softSteps * 4, 40);
+            const hardCalls = Number.isFinite(softCalls)
+                ? Math.max(softCalls * 5, 100)
+                : 500;
             let toolCallsUsed = 0;
+            let budgetWarned = false;
+            const budgetWarning = () => `Budget warning: you have used ${toolCallsUsed} tool calls (planned budget ${Number.isFinite(softCalls) ? softCalls : 'unlimited'}). ` +
+                'Do not call any more tools unless strictly required: finish now with your final artifact ' +
+                '(status, summary, decisions, files changed, commands run, risks, handoff).';
             await report(request, {
                 type: 'output',
                 message: `Sending request to ${this.name} (${this.#provider.protocol}, model ${model}).`,
             });
+            const seenCalls = new Map();
             const runTool = async (call) => {
                 toolCallsUsed += 1;
+                if (toolCallsUsed > hardCalls)
+                    return {
+                        content: 'Safety ceiling reached: too many tool calls. Finish with text now.',
+                        isError: true,
+                    };
+                // Token economy: replay the cached result instead of re-executing an
+                // identical call (same tool + same arguments).
+                const signature = `${call.name}:${call.argumentsJson}`;
+                const cached = seenCalls.get(signature);
+                if (cached !== undefined)
+                    return { content: cached, isError: false };
                 const tool = toolsModule.allTools.find((candidate) => candidate.definition.name === call.name);
                 if (request.toolPolicy === 'read-only' && isMutatingTool(call.name))
                     return { content: `Tool '${call.name}' is not allowed in read-only mode.`, isError: true };
@@ -134,7 +160,10 @@ export class ApiProviderRuntime {
                 const context = { root: session.workingDirectory, approve: this.#approve };
                 const result = await toolsModule.executeTool(tool, input, context);
                 const text = result.ok ? result.output : `Error: ${result.error ?? 'tool failed'}`;
-                return { content: text.slice(0, MAX_TOOL_OUTPUT_CHARS), isError: !result.ok };
+                const content = text.slice(0, MAX_TOOL_OUTPUT_CHARS);
+                if (result.ok && seenCalls.size < 200)
+                    seenCalls.set(signature, content);
+                return { content, isError: !result.ok };
             };
             let finalText = '';
             if (this.#provider.protocol === 'openai') {
@@ -142,7 +171,7 @@ export class ApiProviderRuntime {
                     { role: 'system', content: request.prompt },
                     { role: 'user', content: 'Proceed with the task described in the system message.' },
                 ];
-                for (let step = 0; step < maxSteps; step++) {
+                for (let step = 0; step < hardSteps; step++) {
                     const { reply, assistantMessage } = await callOpenAiChat({
                         baseUrl: this.#provider.baseUrl,
                         apiKey: resolution.key,
@@ -157,8 +186,6 @@ export class ApiProviderRuntime {
                         break;
                     }
                     for (const call of reply.toolCalls) {
-                        if (toolCallsUsed >= maxToolCalls)
-                            throw new Error(`Tool call budget exhausted (max ${maxToolCalls}).`);
                         const outcome = await runTool(call);
                         messages.push({
                             role: 'tool',
@@ -166,13 +193,18 @@ export class ApiProviderRuntime {
                             content: outcome.content,
                         });
                     }
-                    if (step === maxSteps - 1)
-                        throw new Error(`Step budget exhausted (max ${maxSteps}) without a final answer.`);
+                    if (!budgetWarned &&
+                        (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
+                        budgetWarned = true;
+                        messages.push({ role: 'user', content: budgetWarning() });
+                    }
+                    if (step === hardSteps - 1)
+                        throw new Error(`Safety ceiling reached after ${hardSteps} steps without a final answer.`);
                 }
             }
             else {
                 const messages = [{ role: 'user', content: request.prompt }];
-                for (let step = 0; step < maxSteps; step++) {
+                for (let step = 0; step < hardSteps; step++) {
                     const { reply, assistantContent } = await callAnthropicMessages({
                         baseUrl: this.#provider.baseUrl,
                         apiKey: resolution.key,
@@ -189,8 +221,6 @@ export class ApiProviderRuntime {
                     }
                     const results = [];
                     for (const call of reply.toolCalls) {
-                        if (toolCallsUsed >= maxToolCalls)
-                            throw new Error(`Tool call budget exhausted (max ${maxToolCalls}).`);
                         const outcome = await runTool(call);
                         results.push({
                             type: 'tool_result',
@@ -200,8 +230,13 @@ export class ApiProviderRuntime {
                         });
                     }
                     messages.push({ role: 'user', content: results });
-                    if (step === maxSteps - 1)
-                        throw new Error(`Step budget exhausted (max ${maxSteps}) without a final answer.`);
+                    if (!budgetWarned &&
+                        (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
+                        budgetWarned = true;
+                        messages.push({ role: 'user', content: budgetWarning() });
+                    }
+                    if (step === hardSteps - 1)
+                        throw new Error(`Safety ceiling reached after ${hardSteps} steps without a final answer.`);
                 }
             }
             session.status = 'completed';
