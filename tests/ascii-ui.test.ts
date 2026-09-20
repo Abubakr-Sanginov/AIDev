@@ -149,6 +149,27 @@ describe('interactive ui', () => {
     expect(text).toContain('VERDICT: PASS');
   });
 
+  it('wraps a long first line of an event instead of truncating it', () => {
+    const long = `Provider failure after 3 attempts: fetch failed. Backend unavailable; continue conservatively and report the gap for the next stage.`;
+    const state = sampleState({
+      events: [
+        {
+          roleId: 'backend',
+          status: 'FAILED',
+          message: long,
+          timestamp: '2026-08-21T10:00:00.000Z',
+        },
+      ],
+    });
+    const view = renderActivityView(state, mono, { width: 80, height: 12 }, 0);
+    const text = view.lines.join('\n');
+    expect(view.total).toBeGreaterThan(1);
+    expect(text).toContain('#001');
+    expect(text).toContain('Backend');
+    for (const word of long.split('.').flatMap((part) => part.split(' ')))
+      if (word.length >= 4) expect(text.replaceAll('\n', ' ')).toContain(word);
+  });
+
   it('renders the agent view with budget, events, and sessions', () => {
     const state = sampleState({
       sessions: [

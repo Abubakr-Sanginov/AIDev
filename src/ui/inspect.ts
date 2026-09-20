@@ -146,10 +146,17 @@ export function renderActivityView(
   const lines: string[] = [];
   state.events.forEach((event, index) => {
     const prefix = `#${String(index + 1).padStart(3, '0')} ${timestampOf(event.timestamp)} ${event.roleId.padEnd(19)} [ ${event.status} ]`;
-    const [first = '', ...rest] = event.message.split('\n');
-    lines.push(`${prefix} ${first}`.trimEnd());
-    for (const continuation of rest)
-      for (const wrapped of wrapText(continuation, contentWidth - 6)) lines.push(`      ${wrapped}`);
+    const firstWidth = Math.max(16, contentWidth - prefix.length - 1);
+    let prefixPlaced = false;
+    for (const raw of event.message.split('\n')) {
+      const wrapped = wrapText(raw, prefixPlaced ? contentWidth - 6 : firstWidth);
+      for (const [position, line] of wrapped.entries()) {
+        if (!prefixPlaced && position === 0) {
+          lines.push(`${prefix} ${line}`.trimEnd());
+          prefixPlaced = true;
+        } else lines.push(`      ${line}`);
+      }
+    }
   });
   if (lines.length === 0) lines.push(theme.muted('No events yet.'));
   const fitted = fit(lines, viewport, scroll);
