@@ -232,9 +232,8 @@ function paint() {
     const config = options();
     const theme = currentTheme();
     const columns = process.stdout.columns;
-    const rows = process.stdout.rows;
-    const viewport = { width: columns, height: Math.max(6, rows) };
-    let output;
+    const maxLines = Math.max(3, process.stdout.rows - 1);
+    let lines;
     if (uiState.view.kind === 'dashboard') {
         uiState.hotspots.length = 0;
         const dashboard = renderDashboard(state, config.root, theme, {
@@ -243,9 +242,12 @@ function paint() {
             hotspots: uiState.hotspots,
             offsetY: bannerHeight(),
         });
-        output = `${renderBanner(theme, VERSION)}${dashboard}\n`;
+        lines = [...renderBanner(theme, VERSION).split('\n'), ...dashboard.split('\n')];
+        // Drop the bottom overflow so the frame never scrolls the screen.
+        lines = lines.slice(0, maxLines);
     }
     else {
+        const viewport = { width: columns, height: maxLines };
         const overlay = uiState.view.kind === 'goal'
             ? renderGoalView(state, theme, viewport, uiState.scroll)
             : uiState.view.kind === 'activity'
@@ -253,9 +255,9 @@ function paint() {
                 : uiState.view.kind === 'agent'
                     ? renderAgentView(state, uiState.view.roleId, theme, viewport, uiState.scroll)
                     : renderHelpView(theme, viewport);
-        output = overlay.lines.map((line) => truncateVisible(line, columns)).join('\n') + '\n';
+        lines = overlay.lines.map((line) => truncateVisible(line, columns));
     }
-    process.stdout.write(`\x1B[H\x1B[2J${output}`);
+    process.stdout.write(`\x1B[H\x1B[2J${lines.slice(0, maxLines).join('\n')}`);
 }
 // The live dashboard redraws in place on the alternate screen buffer (like
 // htop): updates never accumulate in the scrollback, and the terminal content
