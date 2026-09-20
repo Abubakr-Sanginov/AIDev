@@ -171,12 +171,15 @@ describe('runtime workflow regressions', () => {
     expect(state.status).toBe('FAILED');
     expect(state.sessions.filter((session) => session.roleId === 'reviewer')).toHaveLength(2);
     const reviewer = state.events.filter((event) => event.roleId === 'reviewer');
-    expect(reviewer.at(-1)?.status).toBe('FAILED');
-    expect(reviewer.at(-1)?.message).toMatch(/Retry limit exhausted/);
-    const lastFailed = reviewer.reduce(
-      (index, event, current) => (event.status === 'FAILED' ? current : index),
+    // Internal (non-provider) exhaustion must not brand the role FAILED.
+    expect(reviewer.filter((event) => event.status === 'FAILED')).toHaveLength(0);
+    expect(reviewer.at(-1)?.status).toBe('SKIPPED');
+    expect(reviewer.at(-1)?.message).toMatch(/Recovery policy: internal failure after 2 attempts/);
+    const lastTerminal = reviewer.reduce(
+      (index, event, current) =>
+        event.status === 'FAILED' || event.status === 'SKIPPED' ? current : index,
       -1,
     );
-    expect(reviewer.slice(lastFailed + 1).some((event) => event.status === 'ACTIVE')).toBe(false);
+    expect(reviewer.slice(lastTerminal + 1).some((event) => event.status === 'ACTIVE')).toBe(false);
   });
 });

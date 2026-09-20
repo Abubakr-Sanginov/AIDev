@@ -59,6 +59,10 @@ A normal run follows this sequence:
 
 Non-implementing runtime roles use read-only policies where the selected CLI supports them. Implementing roles receive coding access subject to the project's command and approval safeguards. See [Runtime adapters](docs/runtimes.md) and [Adding a runtime](docs/adding-runtime.md).
 
+### Failure semantics
+
+A role is reported as `FAILED` only when the cause is on the provider side: rate limits, HTTP 4xx/5xx responses, timeouts, offline networks, or fatal billing/quota/authentication errors. Anything the CLI itself can cause — exhausted internal budgets, missing artifacts, verification mismatches, declined approvals — is reported as a recovery event (`Recovery policy: …`) and the workflow keeps going, so a healthy provider is never blamed for our own limits. The live dashboard repaints on every event and on a fast heartbeat, while state is persisted to disk through a small throttle.
+
 ## Requirements
 
 - Node.js 20 or newer

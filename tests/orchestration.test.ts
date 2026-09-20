@@ -285,7 +285,7 @@ describe('runtime orchestration', () => {
     expect(state.status).toBe('DONE');
   });
 
-  it('emits a single FAILED event at the end when all attempts fail', async () => {
+  it('emits a single recovery event at the end when all attempts fail for internal reasons', async () => {
     const runtime = new RecordingRuntime({
       coder: [{ kind: 'failure', output: 'nope' }],
     });
@@ -296,10 +296,11 @@ describe('runtime orchestration', () => {
       retryBackoffMs: 0,
     }).run('Write a haiku about rain');
     const coderEvents = state.events.filter((event) => event.roleId === 'coder');
-    const failed = coderEvents.filter((event) => event.status === 'FAILED');
-    expect(failed).toHaveLength(1);
-    expect(coderEvents.at(-1)?.status).toBe('FAILED');
-    expect(failed[0]?.message).toMatch(/Retry limit exhausted/);
+    expect(coderEvents.filter((event) => event.status === 'FAILED')).toHaveLength(0);
+    const recoveries = coderEvents.filter((event) => event.message.includes('Recovery policy'));
+    expect(recoveries).toHaveLength(1);
+    expect(coderEvents.at(-1)?.status).toBe('SKIPPED');
+    expect(recoveries[0]?.message).toMatch(/internal failure after 2 attempts/);
   });
 
   it('fails fast on fatal provider errors without retrying or launching later stages', async () => {
@@ -403,5 +404,58 @@ describe('runtime orchestration', () => {
     expect(captured[1] ?? []).not.toContain('--disallowedTools');
     expect(captured[3] ?? []).toContain('--disallowedTools');
     expect(captured[4] ?? []).toContain('--disallowedTools');
+  });
+
+  it('does not mark a role failed for our own internal problems', async () => {
+    const failure = (): never => {
+      throw new Error('Tool call budget exhausted (max 20).');
+    };
+    const runtime = new RecordingRuntime({
+      manager: [{ kind: 'success', output: 'plan' }],
+      architect: [
+        { kind: 'failure', output: '' },
+        { kind: 'failure', output: '' },
+      ],
+    });
+    runtime.execute = async (session: RuntimeSession, _request: AgentRequest) => {
+      if (session.roleId === 'architect') failure();
+      return { success: true, output: 'VERDICT: PASS', sessionId: session.id, exitCode: 0 };
+    };
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      maxAgentAttempts: 2,
+      retryBackoffMs: 0,
+    }).run('Build a TODO API');
+    const architectFailed = state.events.filter(
+      (event) => event.roleId === 'architect' && event.status === 'FAILED',
+    );
+    const architectSkipped = state.events.filter(
+      (event) => event.roleId === 'architect' && event.status === 'SKIPPED',
+    );
+    expect(architectFailed).toHaveLength(0);
+    expect(architectSkipped.length).toBeGreaterThan(0);
+    expect(architectSkipped.at(-1)?.message).toContain('not provider-side');
+  });
+
+  it('marks a role failed when the provider side is the cause', async () => {
+    const runtime = new RecordingRuntime({
+      manager: [{ kind: 'success', output: 'plan' }],
+    });
+    runtime.execute = async (session: RuntimeSession) => {
+      if (session.roleId === 'architect') throw new Error('HTTP 429: rate limit reached');
+      return { success: true, output: 'VERDICT: PASS', sessionId: session.id, exitCode: 0 };
+    };
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      maxAgentAttempts: 2,
+      retryBackoffMs: 0,
+    }).run('Build a TODO API');
+    const architectFailed = state.events.filter(
+      (event) => event.roleId === 'architect' && event.status === 'FAILED',
+    );
+    expect(architectFailed.length).toBeGreaterThan(0);
+    expect(architectFailed.at(-1)?.message).toContain('Provider failure after 2 attempts');
   });
 });

@@ -307,6 +307,24 @@ async function run(goal) {
         throw new Error('Task cannot be empty.');
     process.stdout.write(renderBanner(sessionTheme, VERSION));
     const store = new StateStore(config.root);
+    // The dashboard must feel instant, so every state publication repaints the
+    // screen immediately. Persisting to disk runs through a small throttle
+    // instead (plus always on terminal states), because each save fsyncs
+    // several JSON files and would otherwise run many times per second.
+    const PERSIST_INTERVAL_MS = 1_000;
+    let lastPersistedAt = 0;
+    let lastPersistedStatus = 'RUNNING';
+    const persist = async (state) => {
+        const terminal = state.status !== 'RUNNING';
+        const due = terminal ||
+            lastPersistedStatus !== state.status ||
+            Date.now() - lastPersistedAt >= PERSIST_INTERVAL_MS;
+        if (!due)
+            return;
+        lastPersistedAt = Date.now();
+        lastPersistedStatus = state.status;
+        await store.save(state);
+    };
     const orchestrator = new RuntimeOrchestrator({
         root: config.root,
         runtime,
@@ -317,8 +335,8 @@ async function run(goal) {
         retryBackoffMs: config.retryBackoffMs,
         maxFixAttempts: config.maxFixAttempts,
         onState: async (state) => {
-            await store.save(state);
             render(state);
+            await persist(state);
         },
         onStateError: (error) => {
             process.stderr.write(`[ WARNING ] State persistence failed: ${error instanceof Error ? error.message : String(error)}\n`);

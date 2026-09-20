@@ -1,6 +1,6 @@
 import { readdir } from 'node:fs/promises';
 import type { CodingRuntime, RuntimeResult, RuntimeSession } from './runtime.js';
-import { isFatalDiagnostic } from './failure-policy.js';
+import { isFatalDiagnostic, isProviderDiagnostic } from './failure-policy.js';
 import { getRole, isReadOnlyRole, roles } from '../roles.js';
 import { formatProjectContext, inspectProject, type ProjectContext } from '../project-context.js';
 import { formatSkillsForPrompt, writeSkillsToProject } from '../skills.js';
@@ -91,7 +91,10 @@ export class RuntimeOrchestrator {
     this.#runtime = options.runtime;
     this.#maxFixAttempts = options.maxFixAttempts ?? 2;
     this.#visibleRuntime = options.visibleRuntime ?? false;
-    this.#heartbeatMs = options.heartbeatMs ?? 2_000;
+    // The heartbeat only refreshes the live dashboard (elapsed time, spinner)
+    // between real activity events, so it ticks fast: the CLI keeps disk writes
+    // throttled separately.
+    this.#heartbeatMs = options.heartbeatMs ?? 200;
     // An explicitly pinned model wins; otherwise Auto rotates the candidate list.
     this.#modelCandidates =
       options.model !== undefined ? [options.model] : [...(options.models ?? [])];
@@ -346,11 +349,19 @@ export class RuntimeOrchestrator {
         attempt += 1;
       }
     }
+    // Provider-side causes (rate limits, 5xx, timeouts, network failures) are
+    // reported as FAILED because only the provider can fix them. Our own
+    // failures (budgets, verification mismatches, denied approvals) must not
+    // mark the role failed: the workflow continues with a recovery event and
+    // the downstream roles see an honest [UNAVAILABLE] artifact.
+    const providerSide = isProviderDiagnostic(diagnostic);
     this.#event(
       state,
       roleId,
-      'FAILED',
-      `Retry limit exhausted (${this.#maxAgentAttempts} attempts): ${diagnostic}. ${fallback}`,
+      providerSide ? 'FAILED' : 'SKIPPED',
+      providerSide
+        ? `Provider failure after ${this.#maxAgentAttempts} attempts: ${diagnostic}. ${fallback}`
+        : `Recovery policy: internal failure after ${this.#maxAgentAttempts} attempts (not provider-side, role not marked failed): ${diagnostic}. ${fallback}`,
       this.#maxAgentAttempts,
       this.#maxAgentAttempts,
     );
