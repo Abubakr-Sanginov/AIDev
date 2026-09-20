@@ -48,7 +48,7 @@ export async function runDoctor(root: string): Promise<DoctorCheck[]> {
   } catch (error) {
     checks.push({ name: 'CLI config', ok: false, detail: message(error) });
   }
-  for (const runtime of createDefaultRegistry().list()) {
+  for (const runtime of (await createDefaultRegistry({ root })).list()) {
     if (runtime.id === 'mock') continue;
     try {
       const detection = await runtime.detect();

@@ -14,6 +14,35 @@ export { inspectProject, formatProjectContext, validateProjectRoot } from './pro
 export type { ProjectContext, InspectProjectOptions } from './project-context.js';
 export { roles, getRole } from './roles.js';
 export { allTools, executeTool } from './tools/index.js';
+export {
+  PROVIDER_PROTOCOLS,
+  RESERVED_PROVIDER_IDS,
+  findPreset,
+  isProviderProtocol,
+  providerPresets,
+} from './providers/catalog.js';
+export type { ProviderPreset, ProviderProtocol } from './providers/catalog.js';
+export { maskKey } from './providers/mask.js';
+export {
+  addCustom,
+  addPreset,
+  getProvider,
+  listProviders,
+  providersView,
+  removeProvider,
+  resolveKey,
+  setKey,
+  testProvider,
+} from './providers/store.js';
+export type {
+  KeyResolution,
+  ProviderView,
+  StoredProvider,
+} from './providers/store.js';
+export { ApiProviderRuntime } from './runtimes/api/runtime.js';
+export type { ApiRuntimeOptions } from './runtimes/api/runtime.js';
+export { createDefaultRegistry } from './runtimes/default-registry.js';
+export type { DefaultRegistryOptions } from './runtimes/default-registry.js';
 export { runDoctor } from './doctor.js';
 export type { DoctorCheck } from './doctor.js';
 export { buildReport, writeReport } from './report.js';

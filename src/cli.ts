@@ -29,6 +29,16 @@ import { loadConfig, resetConfig, setConfigValue, type CliConfig } from './confi
 import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
+import { providerPresets } from './providers/catalog.js';
+import {
+  addCustom,
+  addPreset,
+  listProviders,
+  providersView,
+  removeProvider,
+  setKey,
+  testProvider,
+} from './providers/store.js';
 
 const { version: VERSION } = createRequire(import.meta.url)('../package.json') as {
   version: string;
@@ -116,6 +126,51 @@ async function prompt(question: string): Promise<string> {
     reader.close();
   }
 }
+
+// Reads a secret without echoing it back: stdin goes raw and typed characters
+// are masked, so the key never reaches the scrollback.
+async function promptSecret(question: string): Promise<string> {
+  if (!process.stdin.isTTY) throw new Error('Interactive input is unavailable.');
+  const input = process.stdin;
+  process.stdout.write(question);
+  return new Promise<string>((resolve, reject) => {
+    let value = '';
+    const wasRaw: boolean = input.isRaw;
+    input.setRawMode(true);
+    input.resume();
+    const cleanup = (): void => {
+      input.setRawMode(wasRaw);
+      input.pause();
+      input.off('data', onData);
+      process.stdout.write('\n');
+    };
+    const onData = (chunk: Buffer): void => {
+      for (const byte of chunk) {
+        if (byte === 0x03) {
+          cleanup();
+          reject(new Error('Cancelled.'));
+          return;
+        }
+        if (byte === 0x0d || byte === 0x0a) {
+          cleanup();
+          resolve(value.trim());
+          return;
+        }
+        if (byte === 0x7f || byte === 0x08) {
+          if (value.length > 0) {
+            value = value.slice(0, -1);
+            process.stdout.write('\b \b');
+          }
+          continue;
+        }
+        if (byte < 0x20) continue;
+        value += String.fromCharCode(byte);
+        process.stdout.write('*');
+      }
+    };
+    input.on('data', onData);
+  });
+}
 async function choose(label: string, choices: { id: string; name: string }[]): Promise<string> {
   process.stdout.write(
     `${label}\n${choices.map((choice, index) => `  ${index + 1}) ${choice.name}`).join('\n')}\n`,
@@ -129,15 +184,27 @@ async function choose(label: string, choices: { id: string; name: string }[]): P
 async function resolveGoal(value?: string): Promise<string> {
   return value?.trim() || prompt('What should the AI development team build? ');
 }
-async function resolveRuntimeId(value?: string): Promise<string> {
+async function resolveRuntimeId(value?: string, root?: string): Promise<string> {
   if (value) return value;
   if (!process.stdin.isTTY)
     throw new Error('Choose a runtime with --runtime claude, opencode, or codex.');
-  return choose('Choose a provider:', [
+  const stored = root === undefined ? [] : await listProviders(root);
+  const addId = '__add-provider__';
+  const selected = await choose('Choose a provider:', [
     { id: 'claude', name: 'Claude Code' },
     { id: 'opencode', name: 'OpenCode' },
     { id: 'codex', name: 'Codex' },
+    ...stored.map((provider) => ({
+      id: provider.id,
+      name: `${provider.name} (API key, ${provider.protocol})`,
+    })),
+    { id: addId, name: 'Добавить провайдера (по API-ключу)…' },
   ]);
+  if (selected === addId) {
+    if (root === undefined) throw new Error('Project directory is required to add a provider.');
+    return providerAddFlow(root, {});
+  }
+  return selected;
 }
 async function resolveModel(
   runtime: Awaited<ReturnType<typeof ensureRuntime>>,
@@ -246,8 +313,12 @@ function stopLive(): void {
 
 process.on('exit', stopLive);
 
-async function ensureRuntime(runtimeId: string, approval: ApprovalMode) {
-  const runtime = createDefaultRegistry().get(runtimeId);
+async function ensureRuntime(runtimeId: string, approval: ApprovalMode, root?: string) {
+  const registry = await createDefaultRegistry({
+    ...(root === undefined ? {} : { root }),
+    approve: createApprover(approval),
+  });
+  const runtime = registry.get(runtimeId);
   let detection = await runtime.detect();
   if (!detection.installed) {
     const instructions = runtime.getInstallInstructions();
@@ -303,8 +374,8 @@ async function run(goal?: string): Promise<void> {
       ? config.approval
       : ((saved.approval as ApprovalMode | undefined) ?? config.approval);
   await validateProjectRoot(config.root);
-  const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime);
-  const runtime = await ensureRuntime(runtimeId, approval);
+  const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime, config.root);
+  const runtime = await ensureRuntime(runtimeId, approval, config.root);
   const selection = await resolveModel(runtime, config.root, config.model ?? saved.model);
   const task = await resolveGoal(goal);
   if (!task) throw new Error('Task cannot be empty.');
@@ -384,12 +455,168 @@ program
       ) + '\n',
     );
   });
+interface AddProviderFlags {
+  preset?: string;
+  custom?: boolean;
+  id?: string;
+  name?: string;
+  protocol?: string;
+  baseUrl?: string;
+  models?: string;
+  apiKeyEnv?: string;
+  key?: string;
+}
+
+// Shared add flow used by `providers add` (interactive or flag-driven) and by
+// the "Add provider…" entry in the runtime chooser. Returns the new provider id.
+async function providerAddFlow(root: string, flags: AddProviderFlags): Promise<string> {
+  if (flags.custom) {
+    if (!flags.id || !flags.name || !flags.protocol || !flags.baseUrl || !flags.models)
+      throw new Error(
+        'Custom providers need --id, --name, --protocol, --base-url, and --models.',
+      );
+    const models = flags.models
+      .split(',')
+      .map((model) => model.trim())
+      .filter((model) => model !== '');
+    const provider = await addCustom(
+      root,
+      {
+        id: flags.id,
+        name: flags.name,
+        protocol: flags.protocol,
+        baseUrl: flags.baseUrl,
+        models,
+        ...(flags.apiKeyEnv === undefined ? {} : { apiKeyEnv: flags.apiKeyEnv }),
+      },
+      flags.key,
+    );
+    process.stdout.write(`[ DONE ] Added provider '${provider.id}' (${provider.protocol}).\n`);
+    return provider.id;
+  }
+  if (flags.preset) {
+    const provider = await addPreset(root, flags.preset, flags.key);
+    process.stdout.write(`[ DONE ] Added provider '${provider.id}' (${provider.protocol}).\n`);
+    return provider.id;
+  }
+  const kind = await choose('Add a provider:', [
+    { id: 'preset', name: 'Preset from the built-in catalog' },
+    { id: 'custom', name: 'Custom OpenAI-compatible or Anthropic endpoint' },
+  ]);
+  if (kind === 'preset') {
+    const presetId = await choose(
+      'Choose a preset:',
+      providerPresets.map((preset) => ({
+        id: preset.id,
+        name: `${preset.name} (${preset.apiKeyEnv})`,
+      })),
+    );
+    const key = await promptSecret('API key (leave empty to skip, input hidden): ');
+    const provider = await addPreset(root, presetId, key === '' ? undefined : key);
+    process.stdout.write(`[ DONE ] Added provider '${provider.id}' (${provider.protocol}).\n`);
+    return provider.id;
+  }
+  const id = await prompt('Provider id (lowercase, e.g. mycorp): ');
+  const name = await prompt('Display name: ');
+  const protocol = await choose('Protocol:', [
+    { id: 'openai', name: 'OpenAI-compatible Chat Completions' },
+    { id: 'anthropic', name: 'Anthropic Messages API' },
+  ]);
+  const baseUrl = await prompt('Base URL (OpenAI: include /v1; Anthropic: without /v1): ');
+  const models = (await prompt('Models (comma-separated): '))
+    .split(',')
+    .map((model) => model.trim())
+    .filter((model) => model !== '');
+  const apiKeyEnv = await prompt('Environment variable for the key (optional): ');
+  const key = await promptSecret('API key (leave empty to skip, input hidden): ');
+  const provider = await addCustom(
+    root,
+    { id, name, protocol, baseUrl, models, ...(apiKeyEnv === '' ? {} : { apiKeyEnv }) },
+    key === '' ? undefined : key,
+  );
+  process.stdout.write(`[ DONE ] Added provider '${provider.id}' (${provider.protocol}).\n`);
+  return provider.id;
+}
+
+async function listProvidersAction(): Promise<void> {
+  const views = await providersView(options().root);
+  if (views.length === 0) {
+    process.stdout.write(
+      `No providers configured yet. Add one with: ai-dev-team providers add\nAvailable presets: ${providerPresets
+        .map((preset) => `${preset.id} (${preset.apiKeyEnv})`)
+        .join(', ')}\n`,
+    );
+    return;
+  }
+  const rows = views.map((view) => {
+    const source = view.keySource === 'env' ? `env:${view.apiKeyEnv ?? '?'}` : view.keySource;
+    const masked = view.maskedKey ?? '-';
+    return [view.id, view.name, view.protocol, view.baseUrl, `${source}  ${masked}`];
+  });
+  const header = ['id', 'name', 'protocol', 'baseUrl', 'key'];
+  const widths = header.map((column, index) =>
+    Math.max(column.length, ...rows.map((row) => row[index]?.length ?? 0)),
+  );
+  const line = (columns: string[]): string =>
+    columns.map((column, index) => column.padEnd(widths[index] ?? 0)).join('  ').trimEnd();
+  process.stdout.write(`${line(header)}\n${line(widths.map((width) => '-'.repeat(width)))}\n`);
+  for (const row of rows) process.stdout.write(`${line(row)}\n`);
+}
+
+const providers = program
+  .command('providers')
+  .description('Manage API-key LLM providers (presets and custom endpoints).')
+  .action(async () => listProvidersAction());
+providers
+  .command('list')
+  .description('Show providers with masked keys only.')
+  .action(async () => listProvidersAction());
+providers
+  .command('add')
+  .description('Add a provider from a preset or a custom endpoint definition.')
+  .option('--preset <id>', 'preset id from the built-in catalog')
+  .option('--custom', 'define a custom endpoint')
+  .option('--id <id>', 'provider id for --custom')
+  .option('--name <name>', 'display name for --custom')
+  .option('--protocol <protocol>', 'openai or anthropic (for --custom)')
+  .option('--base-url <url>', 'API base URL (for --custom)')
+  .option('--models <list>', 'comma-separated model ids (for --custom)')
+  .option('--api-key-env <var>', 'environment variable that supplies the key')
+  .option('--key <key>', 'API key to store (prefer the interactive hidden prompt)')
+  .action(async (flags: AddProviderFlags) => {
+    await providerAddFlow(options().root, flags);
+  });
+providers
+  .command('remove <id>')
+  .description('Remove a provider and its stored key.')
+  .action(async (id: string) => {
+    await removeProvider(options().root, id);
+    process.stdout.write(`[ DONE ] Removed provider '${id}'.\n`);
+  });
+providers
+  .command('set-key <id>')
+  .description('Store an API key for a provider (hidden prompt, or --key).')
+  .option('--key <key>', 'API key value (non-interactive)')
+  .action(async (id: string, flags: { key?: string }) => {
+    const key = flags.key ?? (await promptSecret(`API key for '${id}' (input hidden): `));
+    if (key === '') throw new Error('API key cannot be empty.');
+    await setKey(options().root, id, key);
+    process.stdout.write(`[ DONE ] Stored key for '${id}'.\n`);
+  });
+providers
+  .command('test <id>')
+  .description('Send a minimal request to verify the provider and its key.')
+  .action(async (id: string) => {
+    const result = await testProvider(options().root, id);
+    process.stdout.write(`${result.ok ? '[ OK ]' : '[FAIL]'} ${result.message}\n`);
+    if (!result.ok) process.exitCode = 1;
+  });
 program
   .command('runtimes')
   .description('Detect coding runtimes.')
   .action(async () => {
     process.stdout.write('RUNTIME STATUS\n--------------\n');
-    for (const runtime of createDefaultRegistry().list()) {
+    for (const runtime of (await createDefaultRegistry({ root: options().root })).list()) {
       const result = await runtime.detect();
       process.stdout.write(
         `${runtime.name.padEnd(16)} ${result.ready ? 'READY' : result.installed ? 'NOT READY' : 'NOT INSTALLED'}${result.version ? `  ${result.version}` : ''}\n`,
@@ -497,7 +724,11 @@ program
   .description('Open the selected real runtime in a new visible terminal.')
   .action(async () => {
     const config = options();
-    const runtime = await ensureRuntime(await resolveRuntimeId(config.runtimeId), config.approval);
+    const runtime = await ensureRuntime(
+      await resolveRuntimeId(config.runtimeId, config.root),
+      config.approval,
+      config.root,
+    );
     const session = await runtime.launch({
       workingDirectory: config.root,
       roleId: 'interactive',

@@ -168,6 +168,29 @@ ai-dev-team config set theme ocean
 ai-dev-team config reset
 ```
 
+## API-key providers
+
+In addition to locally installed coding-agent CLIs, the CLI can talk directly to hosted LLM APIs. The `providers` command family manages a per-project provider store:
+
+```text
+ai-dev-team providers                       # list configured providers (masked keys)
+ai-dev-team providers list                  # same as above
+ai-dev-team providers add                   # interactive: preset or custom endpoint
+ai-dev-team providers add --preset openai --key sk-...
+ai-dev-team providers add --custom --id mycorp --name "MyCorp LLM" --protocol openai \
+  --base-url https://llm.mycorp.dev/v1 --models my-model-1,my-model-2 \
+  --api-key-env MYCORP_API_KEY [--key sk-...]
+ai-dev-team providers set-key mycorp        # hidden prompt, or --key for scripts
+ai-dev-team providers test mycorp           # minimal request to verify the key
+ai-dev-team providers remove mycorp
+```
+
+Built-in presets: `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistral`, `deepseek`, `xai`. Custom providers speak either the OpenAI-compatible Chat Completions protocol (`--protocol openai`, base URL includes `/v1`) or the Anthropic Messages API (`--protocol anthropic`, base URL without `/v1`).
+
+Providers are stored in `.ai-dev-team/providers.json`; keys live in `.ai-dev-team/secrets.json` (chmod `0600` on POSIX) or in the environment variable named by `apiKeyEnv`, which always wins over a stored key. Both files are inside the already git-ignored `.ai-dev-team/` directory and are written atomically. Key material never appears in `providers list` output (only masked forms like `sk-…cdef`), logs, history, reports, or workflow state.
+
+A configured provider id can be passed to `--runtime` directly, and the interactive runtime chooser also offers an "Add provider (API key)…" entry that runs the same add flow. Read-only roles (manager, tester, reviewer) run with the mutating tools (`write_file`, `edit_file`, `delete_file`, `create_directory`, `run_command`) removed, and the API adapter rejects such calls even if the model emits them. With `--approval ask` in a non-interactive (headless) shell, risky operations are declined automatically — use `--approval always` for unattended runs. The API runtime requires the optional peer dependency `zod` (`npm install zod`); it is loaded lazily only when an API-key provider executes.
+
 ## Existing projects
 
 Run `ai-dev-team "task"` from an existing project root to update that project in place. Before planning, the CLI performs a bounded metadata scan of the project structure, manifests, scripts, configuration, documentation, source paths, and test paths. It uses that context to preserve the project architecture and conventions while making changes.
