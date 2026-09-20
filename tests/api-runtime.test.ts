@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { addCustom, getProvider } from '../src/providers/store.js';
 import { ApiProviderRuntime } from '../src/runtimes/api/runtime.js';
-import { isFatalDiagnostic } from '../src/runtimes/failure-policy.js';
+import { isFatalDiagnostic, isProviderDiagnostic } from '../src/runtimes/failure-policy.js';
 import { MUTATING_TOOL_NAMES, selectTools } from '../src/runtimes/api/tools.js';
 import { allTools } from '../src/tools/index.js';
 import type { StoredProvider } from '../src/providers/store.js';
@@ -325,6 +325,55 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
     expect(result.success).toBe(true);
     expect(result.output).toBe('Plan only.');
     expect(calls[0]?.body.tools).toBeUndefined();
+  });
+
+  it('retries transient network failures inside one stage', async () => {
+    const root = await tempRoot();
+    const stored = await setupProvider(root, 'openai');
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      if (calls <= 2) {
+        const error = new TypeError('fetch failed');
+        (error as { cause?: unknown }).cause = new Error('socket hang up');
+        throw error;
+      }
+      return new Response(
+        JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Recovered.' } }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+    const runtime = new ApiProviderRuntime(stored, {
+      root,
+      fetchImpl,
+      transportDelaysMs: [1, 1],
+    });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
+    const result = await runtime.execute(session, { prompt: 'hi' });
+    expect(result.success).toBe(true);
+    expect(result.output).toBe('Recovered.');
+    expect(calls).toBe(3);
+  });
+
+  it('surfaces the wrapped network cause when the transport stays down', async () => {
+    const root = await tempRoot();
+    const stored = await setupProvider(root, 'openai');
+    const fetchImpl = (async () => {
+      const error = new TypeError('fetch failed');
+      (error as { cause?: unknown }).cause = new Error('connect ETIMEDOUT 1.2.3.4:443');
+      throw error;
+    }) as typeof fetch;
+    const runtime = new ApiProviderRuntime(stored, {
+      root,
+      fetchImpl,
+      transportDelaysMs: [1, 1],
+    });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
+    const error = await runtime.execute(session, { prompt: 'hi' }).catch((e: unknown) => e);
+    const message = (error as Error).message;
+    expect(message).toContain('Network error: fetch failed');
+    expect(message).toContain('connect ETIMEDOUT');
+    expect(isProviderDiagnostic(message)).toBe(true);
   });
 });
 

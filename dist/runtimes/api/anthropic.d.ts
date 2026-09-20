@@ -15,6 +15,7 @@ export declare function callAnthropicMessages(options: {
     messages: AnthropicMessage[];
     tools?: Record<string, unknown>[];
     fetchImpl?: typeof fetch;
+    transportDelaysMs?: readonly number[];
 }): Promise<{
     reply: NormalizedReply;
     assistantContent: AnthropicContentBlock[];

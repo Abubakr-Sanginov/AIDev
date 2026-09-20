@@ -31,6 +31,8 @@ export interface ApiRuntimeOptions {
   root: string;
   approve?: (command: string) => Promise<boolean>;
   fetchImpl?: typeof fetch;
+  /** Backoff between transport-level retries for transient network errors. */
+  transportDelaysMs?: readonly number[];
 }
 
 interface ToolOutcome {
@@ -61,6 +63,7 @@ export class ApiProviderRuntime implements CodingRuntime {
   readonly #root: string;
   readonly #approve: (command: string) => Promise<boolean>;
   readonly #fetchImpl?: typeof fetch;
+  readonly #transportDelaysMs?: readonly number[];
   readonly #sessions = new Map<string, RuntimeSession>();
 
   constructor(provider: StoredProvider, options: ApiRuntimeOptions) {
@@ -70,6 +73,7 @@ export class ApiProviderRuntime implements CodingRuntime {
     this.#root = options.root;
     this.#approve = options.approve ?? (async () => true);
     if (options.fetchImpl !== undefined) this.#fetchImpl = options.fetchImpl;
+    if (options.transportDelaysMs !== undefined) this.#transportDelaysMs = options.transportDelaysMs;
   }
 
   async detect(): Promise<RuntimeDetection> {
@@ -227,6 +231,7 @@ export class ApiProviderRuntime implements CodingRuntime {
             messages,
             tools: schemas,
             ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
+            ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
           });
           messages.push(assistantMessage);
           if (reply.toolCalls.length === 0) {
@@ -265,6 +270,7 @@ export class ApiProviderRuntime implements CodingRuntime {
             messages,
             tools: schemas,
             ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
+            ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
           });
           messages.push({ role: 'assistant', content: assistantContent });
           if (reply.toolCalls.length === 0) {

@@ -6,6 +6,46 @@ async function errorMessage(response) {
     const text = (await response.text()).slice(0, 500);
     return text === '' ? response.statusText : text;
 }
+/** Flattens Node fetch's wrapped cause (DNS, connect timeout, reset, TLS). */
+function transportCause(error) {
+    const parts = [];
+    let current = error;
+    for (let depth = 0; depth < 4 && current instanceof Error; depth += 1) {
+        parts.push(current.message);
+        current = current.cause;
+    }
+    if (typeof current === 'string' && current !== '')
+        parts.push(current);
+    return [...new Set(parts)].join(' | ');
+}
+const TRANSPORT_DELAYS_MS = [500, 2_000, 5_000];
+/**
+ * POSTs JSON with a small transport-level retry: transient network failures
+ * (Wi-Fi drop, provider restart, kept-alive socket closed) should not cost a
+ * whole stage retry, which would resend the entire conversation. Only thrown
+ * fetch errors retry; HTTP error statuses are returned to the caller.
+ */
+export async function postJson(options) {
+    const delays = options.delaysMs ?? TRANSPORT_DELAYS_MS;
+    let lastError;
+    for (let attempt = 0; attempt <= delays.length; attempt += 1) {
+        if (attempt > 0)
+            await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1] ?? 0));
+        try {
+            return await options.fetchImpl(options.url, {
+                method: 'POST',
+                headers: options.headers,
+                body: options.body,
+            });
+        }
+        catch (error) {
+            lastError = error;
+        }
+    }
+    throw new Error(`Network error: fetch failed (${transportCause(lastError)})`, {
+        cause: lastError,
+    });
+}
 function parseToolCalls(message) {
     const raw = message.tool_calls;
     if (!Array.isArray(raw))
@@ -41,13 +81,15 @@ export async function callOpenAiChat(options) {
         body.tools = options.tools;
         body.tool_choice = 'auto';
     }
-    const response = await fetchImpl(`${options.baseUrl}/chat/completions`, {
-        method: 'POST',
+    const response = await postJson({
+        fetchImpl,
+        url: `${options.baseUrl}/chat/completions`,
         headers: {
             'content-type': 'application/json',
             authorization: `Bearer ${options.apiKey}`,
         },
         body: JSON.stringify(body),
+        ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
     });
     if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);

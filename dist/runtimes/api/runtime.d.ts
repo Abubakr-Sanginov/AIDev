@@ -4,6 +4,8 @@ export interface ApiRuntimeOptions {
     root: string;
     approve?: (command: string) => Promise<boolean>;
     fetchImpl?: typeof fetch;
+    /** Backoff between transport-level retries for transient network errors. */
+    transportDelaysMs?: readonly number[];
 }
 /**
  * CodingRuntime backed by a stored provider definition (see providers/store).

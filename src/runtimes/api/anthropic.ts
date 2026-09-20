@@ -1,3 +1,4 @@
+import { postJson } from './openai.js';
 import type { NormalizedReply, NormalizedToolCall } from './tools.js';
 
 export type AnthropicMessage = Record<string, unknown>;
@@ -46,6 +47,7 @@ export async function callAnthropicMessages(options: {
   messages: AnthropicMessage[];
   tools?: Record<string, unknown>[];
   fetchImpl?: typeof fetch;
+  transportDelaysMs?: readonly number[];
 }): Promise<{ reply: NormalizedReply; assistantContent: AnthropicContentBlock[] }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const body: Record<string, unknown> = {
@@ -55,14 +57,16 @@ export async function callAnthropicMessages(options: {
   };
   if (options.system !== '') body.system = options.system;
   if (options.tools && options.tools.length > 0) body.tools = options.tools;
-  const response = await fetchImpl(`${options.baseUrl}/v1/messages`, {
-    method: 'POST',
+  const response = await postJson({
+    fetchImpl,
+    url: `${options.baseUrl}/v1/messages`,
     headers: {
       'content-type': 'application/json',
       'x-api-key': options.apiKey,
       'anthropic-version': ANTHROPIC_VERSION,
     },
     body: JSON.stringify(body),
+    ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
   });
   if (!response.ok)
     throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);

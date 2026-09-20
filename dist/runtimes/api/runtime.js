@@ -23,6 +23,7 @@ export class ApiProviderRuntime {
     #root;
     #approve;
     #fetchImpl;
+    #transportDelaysMs;
     #sessions = new Map();
     constructor(provider, options) {
         this.#provider = provider;
@@ -32,6 +33,8 @@ export class ApiProviderRuntime {
         this.#approve = options.approve ?? (async () => true);
         if (options.fetchImpl !== undefined)
             this.#fetchImpl = options.fetchImpl;
+        if (options.transportDelaysMs !== undefined)
+            this.#transportDelaysMs = options.transportDelaysMs;
     }
     async detect() {
         const resolution = await resolveKey(this.#root, this.id);
@@ -179,6 +182,7 @@ export class ApiProviderRuntime {
                         messages,
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
+                        ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
                     });
                     messages.push(assistantMessage);
                     if (reply.toolCalls.length === 0) {
@@ -213,6 +217,7 @@ export class ApiProviderRuntime {
                         messages,
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
+                        ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
                     });
                     messages.push({ role: 'assistant', content: assistantContent });
                     if (reply.toolCalls.length === 0) {

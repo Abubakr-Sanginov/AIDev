@@ -1,3 +1,4 @@
+import { postJson } from './openai.js';
 export const ANTHROPIC_VERSION = '2023-06-01';
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -44,14 +45,16 @@ export async function callAnthropicMessages(options) {
         body.system = options.system;
     if (options.tools && options.tools.length > 0)
         body.tools = options.tools;
-    const response = await fetchImpl(`${options.baseUrl}/v1/messages`, {
-        method: 'POST',
+    const response = await postJson({
+        fetchImpl,
+        url: `${options.baseUrl}/v1/messages`,
         headers: {
             'content-type': 'application/json',
             'x-api-key': options.apiKey,
             'anthropic-version': ANTHROPIC_VERSION,
         },
         body: JSON.stringify(body),
+        ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
     });
     if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
