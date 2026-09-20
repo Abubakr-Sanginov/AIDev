@@ -30,6 +30,7 @@ temp/
 
 # Local Postman workspace metadata
 .postman/
+postman/
 
 # IDE and operating-system files
 .vscode/

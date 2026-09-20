@@ -288,7 +288,6 @@ src/
                 Provider-based Manager-Coder-Fixer workflow
 tests/          Unit, integration, and workflow regression tests
 docs/           Runtime behavior and extension guides
-postman/        Non-secret Postman workspace globals definition
 ```
 
 ## State and environment data
