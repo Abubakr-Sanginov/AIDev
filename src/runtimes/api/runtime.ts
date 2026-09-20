@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { StoredProvider } from '../../providers/store.js';
 import { resolveKey } from '../../providers/store.js';
 import { findPreset } from '../../providers/catalog.js';
-import type { Tool, ToolContext } from '../../tools/index.js';
+import type { ToolContext } from '../../tools/index.js';
+import * as toolsIndex from '../../tools/index.js';
 import type {
   AgentRequest,
   AuthResult,
@@ -150,14 +151,9 @@ export class ApiProviderRuntime implements CodingRuntime {
           (this.#provider.apiKeyEnv ? ` or set ${this.#provider.apiKeyEnv}` : '');
         throw new Error(`No API key for provider '${this.id}'. ${hint}.`);
       }
-      // Lazy import: src/tools depends on zod, which is an optional peer
-      // dependency. API runtimes load it only when they actually execute.
-      const toolsModule = (await import('../../tools/index.js').catch((error: unknown) => {
-        throw new Error(
-          `The '${this.id}' runtime needs the optional dependency 'zod'. Install it with: npm install zod`,
-          { cause: error },
-        );
-      })) as { allTools: Tool<unknown>[]; executeTool: typeof import('../../tools/index.js').executeTool };
+      // allTools is a static dependency: zod ships as a regular dependency of
+      // the CLI, so the tool layer is always available at runtime.
+      const toolsModule = toolsIndex;
       const tools = selectTools(toolsModule.allTools, request.toolPolicy);
       const schemas = toolsForProtocol(this.#provider.protocol, tools);
       const model = request.model ?? this.#provider.models[0] ?? 'default';

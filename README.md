@@ -142,7 +142,7 @@ AI Development Team has no required project `.env` file. Authenticate supported 
 
 Library consumers who instantiate `AnthropicProvider` directly may copy `.env.example` and supply `ANTHROPIC_API_KEY` through their own environment-loading mechanism. The CLI does not load `.env` automatically, and the example contains no real credential.
 
-`zod` and `@anthropic-ai/sdk` are optional peer dependencies: they are required only by the library-level `AnthropicProvider` and the agent tool layer, not by the CLI. Library consumers install them explicitly: `npm install zod @anthropic-ai/sdk`.
+`zod` is a regular runtime dependency (the API-key provider runtimes and the tool layer need it), so a global install works out of the box. `@anthropic-ai/sdk` remains an optional peer dependency: it is required only by the library-level `AnthropicProvider`, not by the CLI. Library consumers install it explicitly: `npm install @anthropic-ai/sdk`.
 
 Common options include:
 
@@ -189,7 +189,7 @@ Built-in presets: `anthropic`, `openai`, `gemini`, `openrouter`, `groq`, `mistra
 
 Providers are stored in `.ai-dev-team/providers.json`; keys live in `.ai-dev-team/secrets.json` (chmod `0600` on POSIX) or in the environment variable named by `apiKeyEnv`, which always wins over a stored key. Both files are inside the already git-ignored `.ai-dev-team/` directory and are written atomically. Key material never appears in `providers list` output (only masked forms like `sk-…cdef`), logs, history, reports, or workflow state.
 
-A configured provider id can be passed to `--runtime` directly, and the interactive runtime chooser also offers an "Add provider (API key)…" entry that runs the same add flow. Read-only roles (manager, tester, reviewer) run with the mutating tools (`write_file`, `edit_file`, `delete_file`, `create_directory`, `run_command`) removed, and the API adapter rejects such calls even if the model emits them. With `--approval ask` in a non-interactive (headless) shell, risky operations are declined automatically — use `--approval always` for unattended runs. The API runtime requires the optional peer dependency `zod` (`npm install zod`); it is loaded lazily only when an API-key provider executes.
+A configured provider id can be passed to `--runtime` directly, and the interactive runtime chooser also offers an "Add provider (API key)…" entry that runs the same add flow. Read-only roles (manager, tester, reviewer) run with the mutating tools (`write_file`, `edit_file`, `delete_file`, `create_directory`, `run_command`) removed, and the API adapter rejects such calls even if the model emits them. With `--approval ask` in a non-interactive (headless) shell, risky operations are declined automatically — use `--approval always` for unattended runs.
 
 ## Existing projects
 
