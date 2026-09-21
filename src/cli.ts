@@ -267,6 +267,10 @@ export function renderRuntimeState(
     .find((candidate) => verbose || !LOW_VALUE_ACTIVITY.test(candidate.message));
   const attempt = event?.attempt ? `${event.attempt}/${event.maxAttempts ?? event.attempt}` : '-';
   const retry = [...state.events].reverse().find((candidate) => candidate.status === 'RETRYING');
+  const recent = [...state.events]
+    .filter((candidate) => verbose || !LOW_VALUE_ACTIVITY.test(candidate.message))
+    .slice(-4)
+    .map((candidate) => `${candidate.roleId} [ ${candidate.status} ] ${(candidate.message.split('\n')[0] ?? '').trim()}`);
   const lines = [
     `AI DEV TEAM  ${state.status}`,
     `[${'#'.repeat(filled)}${'-'.repeat(width - filled)}] ${progress.completed}/${progress.total}`,
@@ -274,7 +278,7 @@ export function renderRuntimeState(
     `Model: ${state.model ?? 'runtime default'}`,
     `Phase: ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  Attempt: ${attempt}`,
     ...roles.map((role) => `${role.name.padEnd(19)} ${latest.get(role.id) ?? 'WAITING'}`),
-    `Latest: ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 180)}` : 'Waiting'}`,
+    ...(recent.length === 0 ? ['Latest: Waiting'] : recent.map((line) => `  ${line}`)),
     `Retry: ${retry ? (retry.message.split('\n')[0] ?? '').slice(0, 180) : 'none'}`,
   ];
   if (state.status !== 'RUNNING') {

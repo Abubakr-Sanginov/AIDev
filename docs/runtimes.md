@@ -43,6 +43,6 @@ ai-dev-team --runtime codex -C D:\Projects\AIDevTest run "Add tests"
 
 ## Dashboard and runtime terminals
 
-For each active role, real runtimes open a visible PowerShell terminal by default. It follows the output log of the exact child process controlled by the orchestrator, so it never launches a duplicate agent. The original terminal remains the dashboard and shows elapsed time, current phase, completed/total workflow phases, child-process activity, and heartbeat events. `[ RUNNING ]` never contains a fabricated percentage. Use `--no-runtime-terminal` for headless real-runtime execution. Mock runtime execution is always headless.
+For each active role, real runtimes open a visible PowerShell terminal by default. It follows the output log of the exact child process controlled by the orchestrator, so it never launches a duplicate agent. The original terminal remains the dashboard and shows elapsed time, current phase, completed/total workflow phases, child-process activity, and heartbeat events. The Activity panel now shows a rolling list of recent events with role and status badges; for OpenCode events this includes the specific tool name and a one-line summary of the command or path, so you can see exactly what each agent did without opening the full log. `[ RUNNING ]` never contains a fabricated percentage. Use `--no-runtime-terminal` for headless real-runtime execution. Mock runtime execution is always headless.
 
 `MockRuntime` is deterministic and supports success, failure, timeout, and crash behavior for CI.

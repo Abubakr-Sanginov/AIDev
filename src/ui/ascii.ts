@@ -209,6 +209,8 @@ export function estimateEtaMs(
 }
 
 const LOW_VALUE_ACTIVITY = /(?:event:\s*)?(?:step_start|step_finish|tool_use)\b/i;
+/** How many recent events the dashboard Activity panel lists inline. */
+const ACTIVITY_PANEL_ROWS = 4;
 
 /** Clickable screen region, 1-based, inclusive. */
 export interface Rect {
@@ -259,7 +261,6 @@ export function renderDashboard(
     (candidate) => options.verbose || !LOW_VALUE_ACTIVITY.test(candidate.message),
   );
   const event = [...visibleEvents].reverse()[0];
-  const previous = [...visibleEvents].reverse()[1];
   const retry = [...state.events].reverse().find((candidate) => candidate.status === 'RETRYING');
   const attempt = event?.attempt ? `${event.attempt}/${event.maxAttempts ?? event.attempt}` : '-';
   const spinner = state.status === 'RUNNING' ? `${spinnerFrame(now)} ` : '';
@@ -312,11 +313,20 @@ export function renderDashboard(
       : idleMs > 60_000
         ? theme.accent(`${formatDuration(idleMs)} — model is still generating, no new events yet`)
         : formatDuration(idleMs);
+  const recentActivity = [...visibleEvents].slice(-ACTIVITY_PANEL_ROWS);
   const activity = panel(
     'Activity',
     [
-      `${theme.secondary('Latest:')} ${event ? `${event.roleId}: ${(event.message.split('\n')[0] ?? '').slice(0, 120)}` : 'Waiting'}`,
-      `${theme.secondary('Prev:')}   ${previous ? `${previous.roleId}: ${(previous.message.split('\n')[0] ?? '').slice(0, 120)}` : '-'}`,
+      // A short inline history: role, status badge, and the first line of each
+      // message, so the dashboard shows what the agent is actually doing
+      // (which command ran, which file was touched) instead of one line.
+      ...(recentActivity.length === 0
+        ? ['Waiting']
+        : recentActivity.map((activityEvent) => {
+            const headline = (activityEvent.message.split('\n')[0] ?? '').trim();
+            const label = `${activityEvent.roleId} [ ${activityEvent.status} ]`;
+            return `${theme.secondary(label.padEnd(30))} ${headline}`;
+          })),
       `${theme.secondary('Retry:')}  ${retry ? (retry.message.split('\n')[0] ?? '').slice(0, 120) : 'none'}`,
       `${theme.secondary('Idle:')}   ${idleLabel}   ${theme.secondary('Events:')} ${state.events.length}`,
     ],

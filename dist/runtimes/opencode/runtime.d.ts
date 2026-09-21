@@ -1,10 +1,29 @@
 import type { TerminalLauncher } from '../../terminal/terminal.js';
 import { type ProcessResult, type ProcessRunner } from '../process.js';
 import type { AgentRequest, AuthResult, CodingRuntime, InstallInstructions, InstallResult, LaunchOptions, RuntimeDetection, RuntimeModelDiscovery, RuntimeResult, RuntimeSession, RuntimeState } from '../runtime.js';
+interface OpenCodeEvent {
+    type?: unknown;
+    timestamp?: unknown;
+    sessionID?: unknown;
+    sessionId?: unknown;
+    session_id?: unknown;
+    text?: unknown;
+    message?: unknown;
+    error?: unknown;
+    part?: unknown;
+    data?: unknown;
+}
 export interface OpenCodeJsonResult {
     output: string;
     sessionId?: string;
 }
+/**
+ * Turns a tool event into a readable activity line: "bash: npm test" for a
+ * tool call and "bash result: tests passed" for its result. Text, step, and
+ * session events carry no tool invocation, so they return undefined and keep
+ * their existing summaries.
+ */
+export declare function eventToolActivity(event: OpenCodeEvent): string | undefined;
 /** Builds a readable failure message from an OpenCode JSON event stream. */
 export declare function summarizeOpenCodeFailure(result: ProcessResult): string;
 /**
@@ -42,3 +61,4 @@ export declare class OpenCodeRuntime implements CodingRuntime {
     stop(session: RuntimeSession): Promise<void>;
     getStatus(session: RuntimeSession): Promise<RuntimeState>;
 }
+export {};

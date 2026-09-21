@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildOpenCodeRunArgs,
+  eventToolActivity,
   formatOpenCodeLogLine,
   OpenCodeRuntime,
   parseOpenCodeJsonEvents,
@@ -240,6 +241,52 @@ describe('OpenCodeRuntime', () => {
     ).toContain('error: APIError (HTTP 402): quota exhausted');
     expect(formatOpenCodeLogLine('plain diagnostic text', '', now)).toBe('plain diagnostic text');
     expect(formatOpenCodeLogLine('   ', '', now)).toBeUndefined();
+  });
+
+  it('summarizes tool calls and tool results with the command or path they used', () => {
+    expect(
+      eventToolActivity({
+        type: 'tool_use',
+        part: { type: 'tool_use', tool: 'bash', input: { command: 'npm test' } },
+      }),
+    ).toBe('bash: npm test');
+    expect(
+      eventToolActivity({
+        type: 'tool_use',
+        part: { type: 'tool_use', tool: 'edit', input: { filePath: 'src/index.ts' } },
+      }),
+    ).toBe('edit: src/index.ts');
+    expect(
+      eventToolActivity({
+        type: 'tool_result',
+        part: { type: 'tool_result', tool: 'bash', output: 'all tests passed' },
+      }),
+    ).toBe('bash result: all tests passed');
+    // No resolvable tool name: falls back to the existing event summary.
+    expect(eventToolActivity({ type: 'tool_use', part: { type: 'tool_use' } })).toBeUndefined();
+    expect(eventToolActivity({ type: 'text', part: { text: 'hello' } })).toBeUndefined();
+  });
+
+  it('emits tool activity lines for tool events in the live activity feed', async () => {
+    const chunks = [
+      JSON.stringify({ type: 'tool_use', part: { type: 'tool_use', tool: 'bash', input: { command: 'npm test' } } }),
+      JSON.stringify({ type: 'text', part: { text: 'Tests passed.' } }),
+    ];
+    const run = runner(async (_command, _args, _cwd, _timeout, onActivity) => {
+      for (const chunk of chunks) await onActivity?.({ type: 'stdout', text: `${chunk}\n` });
+      return { code: 0, stdout: chunks.join('\n'), stderr: '' };
+    });
+    const runtime = new OpenCodeRuntime(new TestTerminal(), run);
+    const session = await runtime.launch({ workingDirectory: '.', roleId: 'coder' });
+    const activities: string[] = [];
+    await runtime.execute(session, {
+      prompt: 'Run the tests',
+      onActivity: (activity) => {
+        if (activity.type === 'output') activities.push(activity.message);
+      },
+    });
+    expect(activities).toContain('bash: npm test');
+    expect(activities).toContain('Tests passed.');
   });
 
   it('persists a returned session ID and resumes it on the next execution', async () => {

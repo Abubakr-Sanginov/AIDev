@@ -43,6 +43,54 @@ function eventError(event) {
     // error class and HTTP status only when a provider status code is present.
     return status === '' ? detail : `${name ?? 'API error'}${status}: ${detail}`;
 }
+/** Reads the first non-empty string among the given keys across event, part, and data. */
+function eventField(event, ...keys) {
+    const sources = [asRecord(event), asRecord(event.part), asRecord(event.data)];
+    for (const key of keys) {
+        for (const source of sources) {
+            if (source === undefined)
+                continue;
+            const value = source[key];
+            if (typeof value === 'string' && value.length > 0)
+                return value;
+        }
+    }
+    return undefined;
+}
+/** Summarizes tool arguments as the single most informative detail. */
+function summarizeToolArguments(args) {
+    if (typeof args === 'string')
+        return args.trim() || undefined;
+    const record = asRecord(args);
+    if (record === undefined)
+        return undefined;
+    return firstString(record.command, record.cmd, record.path, record.filePath, record.file, record.pattern);
+}
+/**
+ * Turns a tool event into a readable activity line: "bash: npm test" for a
+ * tool call and "bash result: tests passed" for its result. Text, step, and
+ * session events carry no tool invocation, so they return undefined and keep
+ * their existing summaries.
+ */
+export function eventToolActivity(event) {
+    const type = eventField(event, 'type');
+    if (type === undefined || !/tool/i.test(type))
+        return undefined;
+    const tool = eventField(event, 'tool', 'toolName', 'name');
+    if (tool === undefined)
+        return undefined;
+    if (/result|output/i.test(type)) {
+        const output = eventField(event, 'output', 'result');
+        return output === undefined ? `${tool} result` : `${tool} result: ${output}`;
+    }
+    const part = asRecord(event.part);
+    const data = asRecord(event.data);
+    const record = asRecord(event);
+    const rawArgs = part?.input ?? data?.input ?? record?.input
+        ?? part?.args ?? data?.args ?? record?.args;
+    const target = summarizeToolArguments(rawArgs);
+    return target === undefined ? tool : `${tool}: ${target}`;
+}
 /** Builds a readable failure message from an OpenCode JSON event stream. */
 export function summarizeOpenCodeFailure(result) {
     const messages = [];
@@ -84,7 +132,11 @@ export function formatOpenCodeLogLine(line, prefix = '', now = new Date()) {
         const stamp = typeof event.timestamp === 'number' ? new Date(event.timestamp) : now;
         const time = stamp.toLocaleTimeString('en-GB', { hour12: false });
         const part = asRecord(event.part);
-        const detail = eventText(event) ??
+        // Tool events carry the executed command or touched path; prefer that over
+        // the bare part type so the session log reads like a command transcript.
+        const tool = eventToolActivity(event);
+        const detail = tool ??
+            eventText(event) ??
             eventError(event) ??
             firstString(typeof part?.type === 'string' ? part.type : undefined);
         const label = firstString(typeof event.type === 'string' ? event.type : undefined) ?? 'event';
@@ -522,6 +574,11 @@ export class OpenCodeRuntime {
                 const event = asRecord(JSON.parse(line));
                 if (!event)
                     continue;
+                // Tool events are the most informative activity signal: they say
+                // exactly which command ran or which file the agent touched.
+                const tool = eventToolActivity(event);
+                if (tool)
+                    return tool.replaceAll(/\s+/gu, ' ').trim().slice(0, 160);
                 const content = eventText(event) ?? eventError(event);
                 if (content)
                     return content.replaceAll(/\s+/gu, ' ').trim().slice(0, 160);

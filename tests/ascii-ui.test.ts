@@ -268,6 +268,62 @@ describe('ascii ui', () => {
     expect(output).toContain('Run summary');
     expect(output).toContain('Build a TODO API');
   });
+
+  it('lists recent activity rows with role, status, and message detail', () => {
+    const state = sampleState({
+      status: 'RUNNING',
+      events: [
+        {
+          roleId: 'coder',
+          status: 'RUNNING',
+          message: 'Coder attempt 1/3 started.',
+          timestamp: '2026-08-21T10:00:00.000Z',
+        },
+        {
+          roleId: 'coder',
+          status: 'ACTIVE',
+          message: 'bash: npm test',
+          timestamp: '2026-08-21T10:00:05.000Z',
+        },
+        {
+          roleId: 'coder',
+          status: 'ACTIVE',
+          message: 'bash result: all tests passed',
+          timestamp: '2026-08-21T10:00:07.000Z',
+        },
+        {
+          roleId: 'tester',
+          status: 'DONE',
+          message: 'VERDICT: PASS',
+          timestamp: '2026-08-21T10:01:00.000Z',
+        },
+      ],
+    });
+    const output = renderDashboard(state, '/tmp/project', mono, { maxWidth: 96 });
+    expect(output).toContain('bash: npm test');
+    expect(output).toContain('bash result: all tests passed');
+    expect(output).toContain('Coder attempt 1/3 started.');
+    // Low-value events stay hidden unless verbose mode is on.
+    const noisy = renderDashboard(
+      sampleState({
+        events: [
+          { roleId: 'coder', status: 'ACTIVE', message: 'OpenCode event: tool_use' },
+        ],
+      }),
+      '/tmp/project',
+      mono,
+    );
+    expect(noisy).not.toContain('tool_use');
+  });
+
+  it('shows a waiting placeholder when the activity history is empty', () => {
+    const output = renderDashboard(
+      sampleState({ events: [], status: 'RUNNING' }),
+      '/tmp/project',
+      mono,
+    );
+    expect(output).toContain('Waiting');
+  });
 });
 
 describe('config store', () => {

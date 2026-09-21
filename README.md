@@ -61,7 +61,7 @@ Non-implementing runtime roles use read-only policies where the selected CLI sup
 
 ### Live dashboard interactions
 
-While a workflow runs, the dashboard is fully interactive. Click **Overview/Goal** to see the complete request text wrapped (never truncated), click the **Activity** panel for the entire event history with timestamps, click any **agent row** to open that role's details (budget, file access, every event, sessions), and press **h** for the help overlay. Overlays scroll with the mouse wheel, ↑/↓, PgUp/PgDn, Home/End; a click inside an open view or **Esc** returns to the dashboard. The dashboard also surfaces `Idle` (time since the last event) and the previous activity line, so a stalled provider is visible at a glance. Everything runs on the alternate screen buffer, and mouse input is suspended automatically while approval prompts need the keyboard.
+While a workflow runs, the dashboard is fully interactive. Click **Overview/Goal** to see the complete request text wrapped (never truncated), click the **Activity** panel for the entire event history with timestamps (including which tool was invoked, the command or path, and its result status), click any **agent row** to open that role's details (budget, file access, every event, sessions), and press **h** for the help overlay. Overlays scroll with the mouse wheel, ↑/↓, PgUp/PgDn, Home/End; a click inside an open view or **Esc** returns to the dashboard. The dashboard also surfaces `Idle` (time since the last event) and the previous activity line, so a stalled provider is visible at a glance. Everything runs on the alternate screen buffer, and mouse input is suspended automatically while approval prompts need the keyboard.
 
 ### Failure semantics
 
