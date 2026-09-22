@@ -10,8 +10,13 @@ const FULL_STACK_SIGNAL = /full-?stack|фулл?-?стек|полный\s+сте
 const BACKEND_SIGNAL = /\bapi\b|backend|server|database|persistence|graphql|endpoint|rest-?ful|\bservice\b|\bbot\b|бэкенд|бекенд|сервер|база\s+данных|микросервис/i;
 const FRONTEND_SIGNAL = /frontend|storefront|dashboard|user ?interface|\bui\b|client-?side|\bweb\b|website|web-?site|landing|portfolio|pages?\b|blog|e-?commerce|портфолио|сайт|лендинг|страниц|интерфейс|магазин|блог|витрин|фронтенд/i;
 const IMPLEMENTATION_DIRECTIVE = '\n\nYou MUST create or modify the project files in the target project directory using your file-writing tools. A text-only response without created files counts as a failed attempt.';
-const FAIL_VERDICT = /VERDICT:\s*FAIL\b/i;
-const PASS_VERDICT = /VERDICT:\s*PASS\b/i;
+// Roles are told to end with `VERDICT: X`, but models routinely emit the same
+// decision as a markdown status line (`**status:** `FAIL``). Both forms must
+// count, or a failing gate silently reads as a pass.
+const VERDICT_LINE = /^[^A-Za-z0-9]{0,4}(?:\*\*)?\s*(?:verdict|status)\s*(?:\*\*)?\s*:\s*[^A-Za-z]{0,4}([A-Za-z_]+)/gim;
+function verdicts(output) {
+    return [...output.matchAll(VERDICT_LINE)].map((match) => (match[1] ?? '').toUpperCase());
+}
 const DEFECT_FINDING = /\b(?:defects?|failures?|errors?|issues?)\s*:\s*(?!none\b|no\b|0\b)/i;
 const NO_DEFECT_FINDING = /\b(?:no\s+(?:reproducible\s+)?defects?|defects?\s*:\s*(?:none|no|0))\b/i;
 export class RuntimeOrchestrator {
@@ -29,8 +34,11 @@ export class RuntimeOrchestrator {
     #statePublication = Promise.resolve();
     #scheduledRoles = [];
     #fatalDiagnostic;
+    #browserCheck;
+    #browserFailed = false;
     constructor(options) {
         this.#root = options.root;
+        this.#browserCheck = options.browserCheck;
         this.#runtime = options.runtime;
         this.#maxFixAttempts = options.maxFixAttempts ?? 2;
         this.#visibleRuntime = options.visibleRuntime ?? false;
@@ -106,6 +114,7 @@ export class RuntimeOrchestrator {
         artifacts.tester = await this.#safeExecute('tester', this.#artifactHandoff(goal, artifacts, projectSummary), state, 'Testing unavailable; Reviewer must report the verification gap.');
         if (missingArtifacts)
             artifacts.tester = `${artifacts.tester}\n${artifacts.artifactVerification}`;
+        artifacts.tester = await this.#withBrowserCheck(artifacts.tester, state);
         if (this.#reportsDefects(artifacts.tester)) {
             for (let attempt = 0; attempt < this.#maxFixAttempts; attempt += 1) {
                 artifacts.fixer = await this.#safeExecute('fixer', this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE, state, 'Fix failed; preserve defect for review.');
@@ -123,6 +132,7 @@ export class RuntimeOrchestrator {
                 artifacts.tester = await this.#safeExecute('tester', this.#artifactHandoff(goal, artifacts, projectSummary), state, 'Retest unavailable; preserve verification gap.');
                 if (missingArtifacts)
                     artifacts.tester += `\n${artifacts.artifactVerification}`;
+                artifacts.tester = await this.#withBrowserCheck(artifacts.tester, state);
                 if (!this.#reportsDefects(artifacts.tester))
                     break;
             }
@@ -134,8 +144,10 @@ export class RuntimeOrchestrator {
         else {
             this.#event(state, 'reviewer', 'SKIPPED', 'Reviewer not scheduled because implementation verification did not pass.');
         }
-        state.status =
-            !this.#reportsDefects(artifacts.tester) && this.#reviewApproved(review) ? 'DONE' : 'FAILED';
+        const defectsReported = this.#reportsDefects(artifacts.tester);
+        state.status = !defectsReported && this.#reviewApproved(review) ? 'DONE' : 'FAILED';
+        if (state.status === 'FAILED')
+            state.failureReason = this.#failureReason(defectsReported, review);
         delete state.currentRoleId;
         await this.#terminalize(state);
         await this.#publish(state);
@@ -154,16 +166,69 @@ export class RuntimeOrchestrator {
         return ['coder'];
     }
     #reportsDefects(output) {
-        if (FAIL_VERDICT.test(output))
+        const stated = verdicts(output);
+        // Fail closed: a gate that stated FAIL anywhere in its artifact is a defect
+        // report even when a later section reads as a pass.
+        if (stated.includes('FAIL'))
             return true;
-        if (PASS_VERDICT.test(output) || NO_DEFECT_FINDING.test(output))
+        if (stated.includes('PASS') || NO_DEFECT_FINDING.test(output))
             return false;
         return DEFECT_FINDING.test(output);
     }
+    /**
+     * Runs the browser check and appends its report to the tester artifact.
+     * Its events use the pseudo-role `browser`: they show in Activity without
+     * touching agent rows, so the tester stays DONE and nothing is cancelled.
+     */
+    async #withBrowserCheck(tester, state) {
+        this.#browserFailed = false;
+        if (this.#browserCheck === undefined)
+            return tester;
+        let outcome;
+        try {
+            outcome = await this.#browserCheck((message) => {
+                this.#event(state, 'browser', 'ACTIVE', message);
+                void this.#publish(state);
+            });
+        }
+        catch (error) {
+            // A crash in the check itself says nothing about the site; never fail on it.
+            const message = error instanceof Error ? error.message : String(error);
+            outcome = { status: 'skipped', report: `## Browser check\nSkipped: the check crashed: ${message}` };
+        }
+        if (outcome === undefined) {
+            this.#event(state, 'browser', 'SKIPPED', 'No web app to open; browser check skipped.');
+            await this.#publish(state);
+            return tester;
+        }
+        this.#browserFailed = outcome.status === 'fail';
+        const summary = outcome.status === 'pass'
+            ? 'Browser check passed: the site loads and survives clicks without errors.'
+            : outcome.status === 'fail'
+                ? 'Browser check FAILED: defects routed to the fixer.'
+                : (outcome.report.split('\n')[1] ?? 'Browser check skipped.');
+        this.#event(state, 'browser', outcome.status === 'skipped' ? 'SKIPPED' : 'DONE', summary);
+        await this.#publish(state);
+        return `${tester}\n\n${outcome.report}`;
+    }
+    /** Explains a gate-level failure, which leaves no FAILED agent event behind. */
+    #failureReason(defectsReported, review) {
+        if (defectsReported && this.#browserFailed)
+            return 'Browser check found defects in the running site; see the tester artifact.';
+        if (defectsReported)
+            return 'Tester reported defects; the quality gate did not pass.';
+        if (review.startsWith('[SKIPPED ') || review.startsWith('[UNAVAILABLE '))
+            return 'Review did not run, so the workflow could not be approved.';
+        if (/\bCHANGES_REQUIRED\b/i.test(review))
+            return 'Reviewer returned CHANGES_REQUIRED.';
+        return 'Reviewer returned no APPROVED verdict.';
+    }
     #reviewApproved(output) {
+        const stated = verdicts(output);
         return (!output.startsWith('[UNAVAILABLE ') &&
+            !stated.includes('FAIL') &&
             !/\bCHANGES_REQUIRED\b/i.test(output) &&
-            /\bAPPROVED\b|VERDICT:\s*PASS\b/i.test(output));
+            (stated.includes('APPROVED') || stated.includes('PASS') || /\bAPPROVED\b/i.test(output)));
     }
     async #safeExecute(roleId, prompt, state, fallback, verify) {
         if (this.#fatalDiagnostic !== undefined) {

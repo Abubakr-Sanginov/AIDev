@@ -20,6 +20,18 @@ function transportCause(error) {
 }
 const TRANSPORT_DELAYS_MS = [500, 2_000, 5_000];
 /**
+ * A provider that accepts the connection and then never answers would otherwise
+ * hang the stage forever: Node's fetch has no response timeout of its own.
+ */
+const DEFAULT_TIMEOUT_MS = 300_000;
+function requestTimeoutMs() {
+    const raw = Number(process.env.AI_DEV_TEAM_REQUEST_TIMEOUT_MS);
+    return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TIMEOUT_MS;
+}
+function isTimeout(error) {
+    return error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+}
+/**
  * POSTs JSON with a small transport-level retry: transient network failures
  * (Wi-Fi drop, provider restart, kept-alive socket closed) should not cost a
  * whole stage retry, which would resend the entire conversation. Only thrown
@@ -27,6 +39,7 @@ const TRANSPORT_DELAYS_MS = [500, 2_000, 5_000];
  */
 export async function postJson(options) {
     const delays = options.delaysMs ?? TRANSPORT_DELAYS_MS;
+    const timeoutMs = options.timeoutMs ?? requestTimeoutMs();
     let lastError;
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
         if (attempt > 0)
@@ -36,9 +49,14 @@ export async function postJson(options) {
                 method: 'POST',
                 headers: options.headers,
                 body: options.body,
+                signal: AbortSignal.timeout(timeoutMs),
             });
         }
         catch (error) {
+            // A timeout already spent the whole budget; retrying in-place would only
+            // stall the stage further, so it surfaces to the stage-level retry.
+            if (isTimeout(error))
+                throw new Error(`Provider did not respond within ${timeoutMs}ms. Set AI_DEV_TEAM_REQUEST_TIMEOUT_MS to change the budget.`, { cause: error });
             lastError = error;
         }
     }
@@ -90,6 +108,7 @@ export async function callOpenAiChat(options) {
         },
         body: JSON.stringify(body),
         ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
     if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);

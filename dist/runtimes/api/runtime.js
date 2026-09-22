@@ -24,6 +24,7 @@ export class ApiProviderRuntime {
     #approve;
     #fetchImpl;
     #transportDelaysMs;
+    #requestTimeoutMs;
     #sessions = new Map();
     constructor(provider, options) {
         this.#provider = provider;
@@ -35,6 +36,8 @@ export class ApiProviderRuntime {
             this.#fetchImpl = options.fetchImpl;
         if (options.transportDelaysMs !== undefined)
             this.#transportDelaysMs = options.transportDelaysMs;
+        if (options.requestTimeoutMs !== undefined)
+            this.#requestTimeoutMs = options.requestTimeoutMs;
     }
     async detect() {
         const resolution = await resolveKey(this.#root, this.id);
@@ -183,6 +186,7 @@ export class ApiProviderRuntime {
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
                         ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+                        ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
                     });
                     messages.push(assistantMessage);
                     if (reply.toolCalls.length === 0) {
@@ -218,6 +222,7 @@ export class ApiProviderRuntime {
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
                         ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+                        ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
                     });
                     messages.push({ role: 'assistant', content: assistantContent });
                     if (reply.toolCalls.length === 0) {

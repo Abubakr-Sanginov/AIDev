@@ -2,8 +2,9 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { durableWriteFile } from './durable-file.js';
 import { resolveTheme } from './ui/ascii.js';
-const CONFIG_KEYS = ['runtime', 'model', 'approval', 'theme'];
+const CONFIG_KEYS = ['runtime', 'model', 'approval', 'theme', 'browser'];
 const APPROVAL_MODES = ['ask', 'always', 'never'];
+export const BROWSER_MODES = ['auto', 'headed', 'headless', 'off'];
 export function configPath(root) {
     return path.join(root, '.ai-dev-team', 'config.json');
 }
@@ -34,6 +35,8 @@ export async function setConfigValue(root, key, value) {
         throw new Error(`Config value for '${key}' cannot be empty.`);
     if (key === 'approval' && !APPROVAL_MODES.includes(value))
         throw new Error('approval must be ask, always, or never.');
+    if (key === 'browser' && !BROWSER_MODES.includes(value))
+        throw new Error(`browser must be one of: ${BROWSER_MODES.join(', ')}.`);
     if (key === 'theme')
         resolveTheme(value);
     const next = { ...(await loadConfig(root)) };

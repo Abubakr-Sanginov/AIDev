@@ -55,6 +55,7 @@ export async function callAnthropicMessages(options) {
         },
         body: JSON.stringify(body),
         ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
+        ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
     });
     if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);

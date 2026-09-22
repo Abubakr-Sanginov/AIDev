@@ -33,6 +33,7 @@ export interface ApiRuntimeOptions {
   fetchImpl?: typeof fetch;
   /** Backoff between transport-level retries for transient network errors. */
   transportDelaysMs?: readonly number[];
+  requestTimeoutMs?: number;
 }
 
 interface ToolOutcome {
@@ -64,6 +65,7 @@ export class ApiProviderRuntime implements CodingRuntime {
   readonly #approve: (command: string) => Promise<boolean>;
   readonly #fetchImpl?: typeof fetch;
   readonly #transportDelaysMs?: readonly number[];
+  readonly #requestTimeoutMs?: number;
   readonly #sessions = new Map<string, RuntimeSession>();
 
   constructor(provider: StoredProvider, options: ApiRuntimeOptions) {
@@ -74,6 +76,7 @@ export class ApiProviderRuntime implements CodingRuntime {
     this.#approve = options.approve ?? (async () => true);
     if (options.fetchImpl !== undefined) this.#fetchImpl = options.fetchImpl;
     if (options.transportDelaysMs !== undefined) this.#transportDelaysMs = options.transportDelaysMs;
+    if (options.requestTimeoutMs !== undefined) this.#requestTimeoutMs = options.requestTimeoutMs;
   }
 
   async detect(): Promise<RuntimeDetection> {
@@ -232,6 +235,7 @@ export class ApiProviderRuntime implements CodingRuntime {
             tools: schemas,
             ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
             ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+            ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
           });
           messages.push(assistantMessage);
           if (reply.toolCalls.length === 0) {
@@ -271,6 +275,7 @@ export class ApiProviderRuntime implements CodingRuntime {
             tools: schemas,
             ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
             ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+            ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
           });
           messages.push({ role: 'assistant', content: assistantContent });
           if (reply.toolCalls.length === 0) {

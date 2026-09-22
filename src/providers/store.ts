@@ -1,4 +1,5 @@
-import { chmod, readFile } from 'node:fs/promises';
+import { chmod, readFile, rename } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { durableWriteFile } from '../durable-file.js';
 import {
@@ -42,11 +43,30 @@ interface SecretsFile {
 
 const PROVIDER_ID_PATTERN = /^[a-z][a-z0-9-]{1,31}$/;
 
-export function providersFilePath(root: string): string {
+/**
+ * Providers, their model lists and API keys belong to the user, not to one
+ * project: a provider added once must be available in every project. They
+ * live in ~/.ai-dev-team (AI_DEV_TEAM_HOME overrides it, e.g. for tests).
+ */
+export function globalHome(): string {
+  const override = process.env.AI_DEV_TEAM_HOME?.trim();
+  return override ? path.resolve(override) : path.join(homedir(), '.ai-dev-team');
+}
+
+export function providersFilePath(): string {
+  return path.join(globalHome(), 'providers.json');
+}
+
+export function secretsFilePath(): string {
+  return path.join(globalHome(), 'secrets.json');
+}
+
+/** Where releases up to 0.3.8 kept providers: inside each project. */
+function legacyProvidersPath(root: string): string {
   return path.join(root, '.ai-dev-team', 'providers.json');
 }
 
-export function secretsFilePath(root: string): string {
+function legacySecretsPath(root: string): string {
   return path.join(root, '.ai-dev-team', 'secrets.json');
 }
 
@@ -82,10 +102,10 @@ function parseStoredProvider(id: string, value: unknown): StoredProvider | undef
   };
 }
 
-async function readProvidersFile(root: string): Promise<ProvidersFile> {
+async function readProvidersAt(file: string): Promise<ProvidersFile> {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(providersFilePath(root), 'utf8'));
+    raw = JSON.parse(await readFile(file, 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, providers: {} };
     if (error instanceof SyntaxError) return { version: 1, providers: {} };
@@ -100,10 +120,10 @@ async function readProvidersFile(root: string): Promise<ProvidersFile> {
   return { version: 1, providers };
 }
 
-async function readSecretsFile(root: string): Promise<SecretsFile> {
+async function readSecretsAt(file: string): Promise<SecretsFile> {
   let raw: unknown;
   try {
-    raw = JSON.parse(await readFile(secretsFilePath(root), 'utf8'));
+    raw = JSON.parse(await readFile(file, 'utf8'));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, keys: {} };
     if (error instanceof SyntaxError) return { version: 1, keys: {} };
@@ -116,12 +136,12 @@ async function readSecretsFile(root: string): Promise<SecretsFile> {
   return { version: 1, keys };
 }
 
-async function writeProvidersFile(root: string, file: ProvidersFile): Promise<void> {
-  await durableWriteFile(providersFilePath(root), JSON.stringify(file, null, 2) + '\n');
+async function writeProvidersFile(file: ProvidersFile): Promise<void> {
+  await durableWriteFile(providersFilePath(), JSON.stringify(file, null, 2) + '\n');
 }
 
-async function writeSecretsFile(root: string, file: SecretsFile): Promise<void> {
-  const target = secretsFilePath(root);
+async function writeSecretsFile(file: SecretsFile): Promise<void> {
+  const target = secretsFilePath();
   await durableWriteFile(target, JSON.stringify(file, null, 2) + '\n');
   if (process.platform === 'win32') return;
   try {
@@ -129,6 +149,65 @@ async function writeSecretsFile(root: string, file: SecretsFile): Promise<void> 
   } catch {
     // Best effort: a filesystem without POSIX mode support must not fail the write.
   }
+}
+
+const migratedRoots = new Set<string>();
+
+async function renameAside(file: string): Promise<void> {
+  try {
+    await rename(file, file.replace(/\.json$/, '.migrated.json'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+/**
+ * One-time move of a project's legacy providers and keys into the global
+ * store. Global entries win on id conflicts. The project files are renamed to
+ * *.migrated.json rather than deleted, and never read again, so a provider
+ * removed globally cannot be resurrected from the project copy.
+ */
+async function migrateProjectStore(root: string): Promise<void> {
+  const resolved = path.resolve(root);
+  // Keyed by home too: the same project may be seen under different homes.
+  const cacheKey = `${globalHome()}|${resolved}`;
+  if (migratedRoots.has(cacheKey)) return;
+  const legacyProviders = legacyProvidersPath(resolved);
+  const legacySecrets = legacySecretsPath(resolved);
+  // Running inside the home directory makes the legacy and global paths the
+  // same file; "migrating" it would rename the global store away.
+  if (path.resolve(legacyProviders) === path.resolve(providersFilePath())) {
+    migratedRoots.add(cacheKey);
+    return;
+  }
+  const projectProviders = await readProvidersAt(legacyProviders);
+  const projectSecrets = await readSecretsAt(legacySecrets);
+  if (
+    Object.keys(projectProviders.providers).length > 0 ||
+    Object.keys(projectSecrets.keys).length > 0
+  ) {
+    const providers = await readProvidersAt(providersFilePath());
+    const secrets = await readSecretsAt(secretsFilePath());
+    for (const [id, provider] of Object.entries(projectProviders.providers))
+      providers.providers[id] ??= provider;
+    for (const [id, key] of Object.entries(projectSecrets.keys))
+      if (providers.providers[id] !== undefined) secrets.keys[id] ??= key;
+    await writeProvidersFile(providers);
+    await writeSecretsFile(secrets);
+  }
+  await renameAside(legacyProviders);
+  await renameAside(legacySecrets);
+  migratedRoots.add(cacheKey);
+}
+
+async function readProvidersFile(root: string): Promise<ProvidersFile> {
+  await migrateProjectStore(root);
+  return readProvidersAt(providersFilePath());
+}
+
+async function readSecretsFile(root: string): Promise<SecretsFile> {
+  await migrateProjectStore(root);
+  return readSecretsAt(secretsFilePath());
 }
 
 function assertValidId(id: string): void {
@@ -192,7 +271,7 @@ async function saveProvider(root: string, provider: StoredProvider, key?: string
   if (file.providers[provider.id])
     throw new Error(`Provider '${provider.id}' already exists. Remove it first to re-add.`);
   file.providers[provider.id] = provider;
-  await writeProvidersFile(root, file);
+  await writeProvidersFile(file);
   if (key !== undefined) await setKey(root, provider.id, key);
 }
 
@@ -251,13 +330,13 @@ export async function removeProvider(root: string, id: string): Promise<void> {
   const remainingProviders = Object.fromEntries(
     Object.entries(providers.providers).filter(([key]) => key !== id),
   );
-  await writeProvidersFile(root, { version: 1, providers: remainingProviders });
+  await writeProvidersFile({ version: 1, providers: remainingProviders });
   const secrets = await readSecretsFile(root);
   if (secrets.keys[id] !== undefined) {
     const remainingKeys = Object.fromEntries(
       Object.entries(secrets.keys).filter(([key]) => key !== id),
     );
-    await writeSecretsFile(root, { version: 1, keys: remainingKeys });
+    await writeSecretsFile({ version: 1, keys: remainingKeys });
   }
 }
 
@@ -265,7 +344,7 @@ export async function setKey(root: string, id: string, key: string): Promise<voi
   await requireProvider(root, id);
   const secrets = await readSecretsFile(root);
   secrets.keys[id] = normalizeKey(key);
-  await writeSecretsFile(root, secrets);
+  await writeSecretsFile(secrets);
 }
 
 export async function resolveKey(root: string, id: string): Promise<KeyResolution> {

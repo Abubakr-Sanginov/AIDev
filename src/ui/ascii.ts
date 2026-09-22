@@ -342,6 +342,17 @@ export function renderDashboard(
   return sections.join('\n');
 }
 
+/**
+ * A workflow can end FAILED with every agent DONE: the tester or the reviewer
+ * gate rejected the result. Reporting "0 agent(s) failed ()" hides that, so the
+ * recorded reason is used whenever no agent event actually failed.
+ */
+function failureHeadline(state: RuntimeWorkflowState, failedRoles: readonly string[]): string {
+  if (failedRoles.length === 0)
+    return `${state.failureReason ?? 'Workflow did not pass its quality gates.'} Inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`;
+  return `${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`;
+}
+
 export function renderSummary(
   state: RuntimeWorkflowState,
   theme: Theme,
@@ -357,9 +368,7 @@ export function renderSummary(
   const headline =
     state.status === 'DONE'
       ? theme.success('✔ Implementation, verification, and review completed.')
-      : theme.failure(
-          `✖ ${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`,
-        );
+      : theme.failure(`✖ ${failureHeadline(state, failedRoles)}`);
   const lines = [
     headline,
     `${theme.secondary('Duration:')} ${duration}  ${theme.secondary('Fix cycles:')} ${state.attempts}  ${theme.secondary('Sessions:')} ${state.sessions.length}  ${theme.secondary('Events:')} ${state.events.length}`,

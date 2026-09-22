@@ -38,7 +38,14 @@ import {
   reduceUiEvent,
   type UiState,
 } from './ui/interactive.js';
-import { loadConfig, resetConfig, setConfigValue, type CliConfig } from './config.js';
+import {
+  BROWSER_MODES,
+  loadConfig,
+  resetConfig,
+  setConfigValue,
+  type CliConfig,
+} from './config.js';
+import { runBrowserCheck } from './browser/check.js';
 import { appendRunRecord, listRunRecords, type RunRecord } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
@@ -70,6 +77,11 @@ program
   .option('--agent-attempts <count>', 'attempts per agent/runtime stage', '3')
   .option('--retry-backoff-ms <ms>', 'initial exponential retry backoff', '1000')
   .option('--fix-attempts <count>', 'maximum tester-fixer-retest cycles', '2')
+  .option(
+    '--browser <mode>',
+    'open the built site in a browser and click through it: auto (visible window in a terminal), headed, headless, or off',
+    'auto',
+  )
   .option('--theme <name>', `color theme: ${THEME_NAMES.join(', ')}`)
   .option('--verbose', 'show low-level runtime activity')
   .option(
@@ -90,6 +102,7 @@ function options(): {
   maxFixAttempts: number;
   verbose: boolean;
   theme?: string;
+  browser: string;
 } {
   const value = program.opts<{
     directory: string;
@@ -102,10 +115,13 @@ function options(): {
     retryBackoffMs: string;
     fixAttempts: string;
     verbose?: boolean;
+    browser: string;
   }>();
   if (!['ask', 'always', 'never'].includes(value.approval))
     throw new Error('--approval must be ask, always, or never.');
   if (value.theme !== undefined) resolveTheme(value.theme);
+  if (!BROWSER_MODES.includes(value.browser))
+    throw new Error(`--browser must be one of: ${BROWSER_MODES.join(', ')}.`);
   const maxAgentAttempts = Number.parseInt(value.agentAttempts, 10);
   const retryBackoffMs = Number.parseInt(value.retryBackoffMs, 10);
   const maxFixAttempts = Number.parseInt(value.fixAttempts, 10);
@@ -122,6 +138,7 @@ function options(): {
     maxFixAttempts,
     verbose: value.verbose ?? false,
     ...(value.theme === undefined ? {} : { theme: value.theme }),
+    browser: value.browser,
   };
 }
 
@@ -285,7 +302,13 @@ export function renderRuntimeState(
     const failures = state.events.filter((candidate) => candidate.status === 'FAILED');
     const failedRoles = [...new Set(failures.map((event) => event.roleId))];
     lines.push(
-      `Summary: ${state.status === 'DONE' ? 'Implementation, verification, and review completed.' : `${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`}`,
+      `Summary: ${
+        state.status === 'DONE'
+          ? 'Implementation, verification, and review completed.'
+          : failedRoles.length === 0
+            ? `${state.failureReason ?? 'Workflow did not pass its quality gates.'} Inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`
+            : `${failedRoles.length} agent(s) failed (${failedRoles.join(', ')}); inspect .ai-dev-team logs and retry after addressing the latest diagnostic.`
+      }`,
     );
     const rootCause = failures.at(-1);
     if (rootCause !== undefined)
@@ -297,6 +320,9 @@ export function renderRuntimeState(
 }
 
 let live = false;
+// Set while a modal prompt owns the terminal: the heartbeat must neither repaint
+// over the question nor pull stdin back into raw mode while the prompt waits.
+let modal = false;
 
 const uiState: UiState = { ...INITIAL_UI_STATE };
 let latestState: RuntimeWorkflowState | undefined;
@@ -306,6 +332,7 @@ function bannerHeight(): number {
 }
 
 function paint(): void {
+  if (modal) return;
   const state = latestState;
   if (state === undefined) return;
   const config = options();
@@ -345,6 +372,7 @@ function paint(): void {
 function render(state: RuntimeWorkflowState): void {
   latestState = state;
   if (!process.stdout.isTTY) return; // the final frame is printed once after the run
+  if (modal) return; // repainted by withInteractiveSuspended once the prompt is answered
   if (!live) {
     process.stdout.write('\x1B[?1049h\x1B[?25l');
     live = true;
@@ -410,6 +438,7 @@ function detachInteractive(): void {
 /** Modal prompts (approval, install confirmation) need the plain cooked stdin. */
 async function withInteractiveSuspended<T>(action: () => Promise<T>): Promise<T> {
   const wasLive = live;
+  modal = true;
   if (wasLive) {
     detachInteractive();
     process.stdout.write('\x1B[?25h\x1B[?1049l');
@@ -418,6 +447,7 @@ async function withInteractiveSuspended<T>(action: () => Promise<T>): Promise<T>
   try {
     return await action();
   } finally {
+    modal = false;
     if (wasLive) {
       process.stdout.write('\x1B[?1049h\x1B[?25l');
       live = true;
@@ -500,6 +530,15 @@ async function run(goal?: string): Promise<void> {
   const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime, config.root);
   const runtime = await ensureRuntime(runtimeId, approval, config.root);
   const selection = await resolveModel(runtime, config.root, config.model ?? saved.model);
+  const browserMode =
+    program.getOptionValueSource('browser') === 'cli'
+      ? config.browser
+      : (saved.browser ?? config.browser);
+  // auto: a visible window when a person is watching the terminal, headless
+  // in CI and pipes where no one could see it.
+  const headed =
+    browserMode === 'headed' ||
+    (browserMode === 'auto' && process.stdout.isTTY && process.env.CI === undefined);
   const task = await resolveGoal(goal);
   if (!task) throw new Error('Task cannot be empty.');
   process.stdout.write(renderBanner(sessionTheme, VERSION));
@@ -531,6 +570,12 @@ async function run(goal?: string): Promise<void> {
     maxAgentAttempts: config.maxAgentAttempts,
     retryBackoffMs: config.retryBackoffMs,
     maxFixAttempts: config.maxFixAttempts,
+    ...(browserMode === 'off' || runtime.id === 'mock'
+      ? {}
+      : {
+          browserCheck: (onActivity: (message: string) => void) =>
+            runBrowserCheck({ root: config.root, headed, onActivity }),
+        }),
     onState: async (state) => {
       render(state);
       await persist(state);
@@ -815,7 +860,7 @@ program
   });
 program
   .command('config [args...]')
-  .description('Show or set persistent defaults: runtime, model, approval, theme.')
+  .description('Show or set persistent defaults: runtime, model, approval, theme, browser.')
   .action(async (args: string[]) => {
     const root = options().root;
     const [first] = args;

@@ -21,8 +21,14 @@ export type KeyResolution = {
     ok: false;
     reason: 'missing' | 'invalid';
 };
-export declare function providersFilePath(root: string): string;
-export declare function secretsFilePath(root: string): string;
+/**
+ * Providers, their model lists and API keys belong to the user, not to one
+ * project: a provider added once must be available in every project. They
+ * live in ~/.ai-dev-team (AI_DEV_TEAM_HOME overrides it, e.g. for tests).
+ */
+export declare function globalHome(): string;
+export declare function providersFilePath(): string;
+export declare function secretsFilePath(): string;
 export declare function listProviders(root: string): Promise<StoredProvider[]>;
 export declare function getProvider(root: string, id: string): Promise<StoredProvider | undefined>;
 export declare function addPreset(root: string, presetId: string, key?: string): Promise<StoredProvider>;

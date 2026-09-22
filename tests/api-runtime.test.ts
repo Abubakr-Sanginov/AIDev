@@ -375,5 +375,33 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
     expect(message).toContain('connect ETIMEDOUT');
     expect(isProviderDiagnostic(message)).toBe(true);
   });
+
+  it('fails the stage when the provider accepts the request but never answers', async () => {
+    const root = await tempRoot();
+    const stored = await setupProvider(root, 'openai');
+    let calls = 0;
+    const fetchImpl = ((_url: string, init?: { signal?: AbortSignal }) => {
+      calls += 1;
+      // A silent socket: only the abort signal ever settles this request.
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const reason: unknown = init.signal?.reason;
+          reject(reason instanceof Error ? reason : new Error('aborted'));
+        });
+      });
+    }) as unknown as typeof fetch;
+    const runtime = new ApiProviderRuntime(stored, {
+      root,
+      fetchImpl,
+      transportDelaysMs: [1, 1],
+      requestTimeoutMs: 20,
+    });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
+    const error = await runtime.execute(session, { prompt: 'hi' }).catch((e: unknown) => e);
+    const message = (error as Error).message;
+    expect(message).toContain('did not respond within 20ms');
+    // The budget was already spent, so the transport must not retry in place.
+    expect(calls).toBe(1);
+  });
 });
 

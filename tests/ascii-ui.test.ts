@@ -11,6 +11,7 @@ import {
   progressBar,
   renderBanner,
   renderDashboard,
+  renderSummary,
   resolveTheme,
   spinnerFrame,
   statusBadge,
@@ -362,6 +363,41 @@ describe('run history', () => {
     });
     const records = await listRunRecords(root);
     expect(records.map((record) => record.goal)).toEqual(['two', 'one']);
+  });
+});
+
+describe('run summary', () => {
+  it('names the failing gate instead of reporting zero failed agents', () => {
+    const state = sampleState({
+      status: 'FAILED',
+      failureReason: 'Reviewer returned CHANGES_REQUIRED.',
+      events: [
+        {
+          roleId: 'reviewer',
+          status: 'DONE',
+          message: 'CHANGES_REQUIRED',
+          timestamp: '2026-08-21T10:01:00.000Z',
+        },
+      ],
+    });
+    const summary = renderSummary(state, mono, 110);
+    expect(summary).toContain('Reviewer returned CHANGES_REQUIRED.');
+    expect(summary).not.toContain('0 agent(s) failed');
+  });
+
+  it('still lists the failed agents when an agent actually failed', () => {
+    const state = sampleState({
+      status: 'FAILED',
+      events: [
+        {
+          roleId: 'backend',
+          status: 'FAILED',
+          message: 'runtime exited with code 1',
+          timestamp: '2026-08-21T10:01:00.000Z',
+        },
+      ],
+    });
+    expect(renderSummary(state, mono, 110)).toContain('1 agent(s) failed (backend)');
   });
 });
 

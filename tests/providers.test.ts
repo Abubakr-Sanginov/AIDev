@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
   addPreset,
   getProvider,
   listProviders,
+  providersFilePath,
   providersView,
   removeProvider,
   resolveKey,
@@ -29,16 +30,77 @@ afterEach(async () => {
 });
 
 describe('provider store', () => {
-  it('adds a preset and reads it back from providers.json', async () => {
+  it('adds a preset and reads it back from the global providers.json', async () => {
     const root = await tempRoot();
     await addPreset(root, 'openai', 'sk-test-1234567890abcdef');
     const provider = await getProvider(root, 'openai');
     expect(provider?.protocol).toBe('openai');
     expect(provider?.baseUrl).toBe('https://api.openai.com/v1');
-    const raw = JSON.parse(
-      await readFile(path.join(root, '.ai-dev-team', 'providers.json'), 'utf8'),
-    ) as { providers: Record<string, unknown> };
+    expect(path.dirname(providersFilePath())).toBe(process.env.AI_DEV_TEAM_HOME);
+    const raw = JSON.parse(await readFile(providersFilePath(), 'utf8')) as {
+      providers: Record<string, unknown>;
+    };
     expect(Object.keys(raw.providers)).toContain('openai');
+    // Nothing provider-related is written into the project any more.
+    await expect(access(path.join(root, '.ai-dev-team', 'providers.json'))).rejects.toThrow();
+  });
+
+  it('shares providers, models and keys across projects', async () => {
+    const first = await tempRoot();
+    const second = await tempRoot();
+    await addCustom(
+      first,
+      {
+        id: 'atria',
+        name: 'Atria',
+        protocol: 'openai',
+        baseUrl: 'https://api.atria.test/v1',
+        models: ['Atria-Dawn-Preview'],
+      },
+      'sk-atria-1234567890abcdef',
+    );
+    expect((await getProvider(second, 'atria'))?.models).toEqual(['Atria-Dawn-Preview']);
+    expect(await resolveKey(second, 'atria')).toEqual({
+      ok: true,
+      key: 'sk-atria-1234567890abcdef',
+      source: 'stored',
+    });
+  });
+
+  it('migrates a legacy project store into the global one exactly once', async () => {
+    const root = await tempRoot();
+    const legacy = path.join(root, '.ai-dev-team');
+    await mkdir(legacy, { recursive: true });
+    await writeFile(
+      path.join(legacy, 'providers.json'),
+      JSON.stringify({
+        version: 1,
+        providers: {
+          atria: {
+            id: 'atria',
+            name: 'Atria',
+            protocol: 'openai',
+            baseUrl: 'https://api.atria.test/v1',
+            models: ['Atria-Dawn-Preview'],
+          },
+        },
+      }),
+    );
+    await writeFile(
+      path.join(legacy, 'secrets.json'),
+      JSON.stringify({ version: 1, keys: { atria: 'sk-legacy-1234567890abcdef' } }),
+    );
+    expect((await listProviders(root)).map((provider) => provider.id)).toEqual(['atria']);
+    expect(await resolveKey(root, 'atria')).toMatchObject({
+      ok: true,
+      key: 'sk-legacy-1234567890abcdef',
+    });
+    // Project copies are set aside, so a global removal cannot be undone by them.
+    await access(path.join(legacy, 'providers.migrated.json'));
+    await access(path.join(legacy, 'secrets.migrated.json'));
+    await removeProvider(root, 'atria');
+    expect(await listProviders(await tempRoot())).toEqual([]);
+    expect(await listProviders(root)).toEqual([]);
   });
 
   it('adds a custom provider with models and env binding', async () => {

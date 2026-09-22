@@ -21,6 +21,8 @@ export interface RuntimeWorkflowState {
     completedPhases?: number;
     totalPhases?: number;
     currentRoleId?: string;
+    /** Why a finished workflow is FAILED when no individual agent failed. */
+    failureReason?: string;
     /** Model currently serving the workflow (Auto rotation keeps it current). */
     model?: string;
     projectContext?: ProjectContext;
@@ -43,6 +45,16 @@ export interface RuntimeWorkflowOptions {
     retryBackoffMs?: number;
     onState?(state: RuntimeWorkflowState): Promise<void> | void;
     onStateError?(error: unknown): Promise<void> | void;
+    /**
+     * Opens the built site in a real browser after each tester pass. Returns
+     * undefined when the project has nothing to open. A `fail` report carries a
+     * `VERDICT: FAIL` line, so it routes to the fixer like any tester defect.
+     */
+    browserCheck?(onActivity: (message: string) => void): Promise<BrowserCheckOutcome | undefined>;
+}
+export interface BrowserCheckOutcome {
+    status: 'pass' | 'fail' | 'skipped';
+    report: string;
 }
 export declare function workflowProgress(state: RuntimeWorkflowState): {
     completed: number;

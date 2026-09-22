@@ -61,8 +61,11 @@ export const roles = [
         description: 'Runs tests and reports defects.',
         canModifyFiles: false,
         dependsOn: ['backend', 'frontend', 'coder'],
-        budget: { maxSteps: 16, maxToolCalls: 14 },
-        systemPrompt: 'Run checks and report reproducible defects with command, expected, actual, and evidence. Never edit files or fix defects. Return PASS or FAIL. ' +
+        // Install plus five gates (test, typecheck, lint, build, e2e) and reading
+        // their output does not fit in 14 calls; a real run spent them all on
+        // reads and never executed a single gate.
+        budget: { maxSteps: 28, maxToolCalls: 24 },
+        systemPrompt: 'Run the quality gates FIRST with run_command (install dependencies, then tests, typecheck, lint, build); spend tool calls on reading files only to explain a gate that already failed. Report reproducible defects with command, expected, actual, and evidence. Never edit files or fix defects. End the artifact with a line `VERDICT: PASS` or `VERDICT: FAIL`; a gate that never executed is FAIL. ' +
             artifact,
     },
     {
@@ -83,7 +86,7 @@ export const roles = [
         canModifyFiles: false,
         dependsOn: ['tester'],
         budget: { maxSteps: 12, maxToolCalls: 10 },
-        systemPrompt: 'Review architecture, code, security, standards, tests, and unresolved failures. Never edit files. Return APPROVED or CHANGES_REQUIRED with findings. ' +
+        systemPrompt: 'Review architecture, code, security, standards, tests, and unresolved failures. Never edit files. End the artifact with a line `VERDICT: APPROVED` or `VERDICT: CHANGES_REQUIRED`, followed by the findings. ' +
             artifact,
     },
 ];

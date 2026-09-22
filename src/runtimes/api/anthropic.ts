@@ -48,6 +48,7 @@ export async function callAnthropicMessages(options: {
   tools?: Record<string, unknown>[];
   fetchImpl?: typeof fetch;
   transportDelaysMs?: readonly number[];
+  timeoutMs?: number;
 }): Promise<{ reply: NormalizedReply; assistantContent: AnthropicContentBlock[] }> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const body: Record<string, unknown> = {
@@ -67,6 +68,7 @@ export async function callAnthropicMessages(options: {
     },
     body: JSON.stringify(body),
     ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
+    ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
   });
   if (!response.ok)
     throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);

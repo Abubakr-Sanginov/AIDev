@@ -265,6 +265,113 @@ describe('runtime orchestration', () => {
     expect(state.status).toBe('FAILED');
   });
 
+  it('routes a markdown status verdict to the fixer like a VERDICT line', async () => {
+    const runtime = new RecordingRuntime({
+      backend: [{ kind: 'success', output: 'api' }],
+      // What models actually emit instead of the requested `VERDICT: FAIL`.
+      tester: [
+        { kind: 'success', output: '# Verification\n\n**status:** `FAIL` \u2014 gates never ran.' },
+        { kind: 'success', output: 'VERDICT: PASS' },
+      ],
+      fixer: [{ kind: 'success', output: 'fixed' }],
+      reviewer: [{ kind: 'success', output: 'VERDICT: APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({ root: '.', runtime, maxFixAttempts: 2 }).run(
+      'Build a TODO API',
+    );
+    expect(runtime.launchedRoleIds).toContain('fixer');
+    expect(state.attempts).toBe(1);
+    expect(state.status).toBe('DONE');
+  });
+
+  it('records why a workflow failed when no agent failed', async () => {
+    const runtime = new RecordingRuntime({
+      backend: [{ kind: 'success', output: 'api' }],
+      tester: [{ kind: 'success', output: 'VERDICT: PASS' }],
+      reviewer: [{ kind: 'success', output: '**status:** CHANGES_REQUIRED' }],
+    });
+    const state = await new RuntimeOrchestrator({ root: '.', runtime }).run('Build a TODO API');
+    expect(state.status).toBe('FAILED');
+    expect(state.events.some((event) => event.status === 'FAILED')).toBe(false);
+    expect(state.failureReason).toBe('Reviewer returned CHANGES_REQUIRED.');
+  });
+
+  it('routes browser-check defects to the fixer and re-checks after the fix', async () => {
+    const runtime = new RecordingRuntime({
+      frontend: [{ kind: 'success', output: 'site' }],
+      tester: [
+        { kind: 'success', output: 'VERDICT: PASS' },
+        { kind: 'success', output: 'VERDICT: PASS' },
+      ],
+      fixer: [{ kind: 'success', output: 'fixed the crash' }],
+      reviewer: [{ kind: 'success', output: 'VERDICT: APPROVED' }],
+    });
+    const outcomes = [
+      {
+        status: 'fail' as const,
+        report: '## Browser check\n- Uncaught exception: boom\n\nVERDICT: FAIL (browser check)',
+      },
+      { status: 'pass' as const, report: '## Browser check\nBrowser check: PASS' },
+    ];
+    let checks = 0;
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      browserCheck: async (onActivity) => {
+        onActivity('Browser check: opening http://localhost:4321/');
+        return outcomes[checks++];
+      },
+    }).run('Build a landing website');
+    expect(checks).toBe(2);
+    expect(runtime.launchedRoleIds).toContain('fixer');
+    // The fixer sees what the browser saw.
+    const fixerPrompt = runtime.executions.find((entry) => entry.roleId === 'fixer')?.request
+      .prompt;
+    expect(fixerPrompt).toContain('Uncaught exception: boom');
+    expect(state.status).toBe('DONE');
+    const browserEvents = state.events.filter((event) => event.roleId === 'browser');
+    expect(browserEvents.map((event) => event.message)).toContain(
+      'Browser check: opening http://localhost:4321/',
+    );
+    // Browser events must not turn the finished tester row into a cancelled one.
+    expect(state.events.some((event) => event.status === 'CANCELLED')).toBe(false);
+  });
+
+  it('names the browser check when its defects survive every fix attempt', async () => {
+    const runtime = new RecordingRuntime({
+      frontend: [{ kind: 'success', output: 'site' }],
+      tester: [{ kind: 'success', output: 'VERDICT: PASS' }],
+      fixer: [{ kind: 'success', output: 'tried' }],
+      reviewer: [{ kind: 'success', output: 'VERDICT: APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      maxFixAttempts: 1,
+      browserCheck: async () => ({
+        status: 'fail',
+        report: '## Browser check\nThe site did not start.\n\nVERDICT: FAIL (browser check)',
+      }),
+    }).run('Build a landing website');
+    expect(state.status).toBe('FAILED');
+    expect(state.failureReason).toContain('Browser check found defects');
+    expect(runtime.launchedRoleIds).not.toContain('reviewer');
+  });
+
+  it('skips the browser check quietly when there is nothing to open', async () => {
+    const runtime = new RecordingRuntime({
+      backend: [{ kind: 'success', output: 'api' }],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const state = await new RuntimeOrchestrator({
+      root: '.',
+      runtime,
+      browserCheck: async () => undefined,
+    }).run('Build a TODO API');
+    expect(state.status).toBe('DONE');
+    expect(state.events.find((event) => event.roleId === 'browser')?.status).toBe('SKIPPED');
+  });
+
   it('marks a role FAILED only after every attempt is exhausted', async () => {
     const runtime = new RecordingRuntime({
       coder: [
@@ -306,7 +413,10 @@ describe('runtime orchestration', () => {
   it('fails fast on fatal provider errors without retrying or launching later stages', async () => {
     const runtime = new RecordingRuntime({
       architect: [
-        { kind: 'failure', output: 'OpenCode exited with code 1: APIError (HTTP 402): free quota exhausted.' },
+        {
+          kind: 'failure',
+          output: 'OpenCode exited with code 1: APIError (HTTP 402): free quota exhausted.',
+        },
       ],
     });
     const state = await new RuntimeOrchestrator({

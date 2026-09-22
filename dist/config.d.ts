@@ -3,9 +3,11 @@ export interface CliConfig {
     model?: string;
     approval?: string;
     theme?: string;
+    browser?: string;
 }
-declare const CONFIG_KEYS: readonly ["runtime", "model", "approval", "theme"];
+declare const CONFIG_KEYS: readonly ["runtime", "model", "approval", "theme", "browser"];
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
+export declare const BROWSER_MODES: string[];
 export declare function configPath(root: string): string;
 export declare function loadConfig(root: string): Promise<CliConfig>;
 export declare function setConfigValue(root: string, key: string, value: string): Promise<CliConfig>;

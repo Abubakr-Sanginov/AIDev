@@ -8,12 +8,14 @@ export interface CliConfig {
   model?: string;
   approval?: string;
   theme?: string;
+  browser?: string;
 }
 
-const CONFIG_KEYS = ['runtime', 'model', 'approval', 'theme'] as const;
+const CONFIG_KEYS = ['runtime', 'model', 'approval', 'theme', 'browser'] as const;
 export type ConfigKey = (typeof CONFIG_KEYS)[number];
 
 const APPROVAL_MODES = ['ask', 'always', 'never'];
+export const BROWSER_MODES = ['auto', 'headed', 'headless', 'off'];
 
 export function configPath(root: string): string {
   return path.join(root, '.ai-dev-team', 'config.json');
@@ -46,6 +48,8 @@ export async function setConfigValue(
   if (value.trim() === '') throw new Error(`Config value for '${key}' cannot be empty.`);
   if (key === 'approval' && !APPROVAL_MODES.includes(value))
     throw new Error('approval must be ask, always, or never.');
+  if (key === 'browser' && !BROWSER_MODES.includes(value))
+    throw new Error(`browser must be one of: ${BROWSER_MODES.join(', ')}.`);
   if (key === 'theme') resolveTheme(value);
   const next: CliConfig = { ...(await loadConfig(root)) };
   next[key as ConfigKey] = value;

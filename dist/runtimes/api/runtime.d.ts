@@ -6,6 +6,7 @@ export interface ApiRuntimeOptions {
     fetchImpl?: typeof fetch;
     /** Backoff between transport-level retries for transient network errors. */
     transportDelaysMs?: readonly number[];
+    requestTimeoutMs?: number;
 }
 /**
  * CodingRuntime backed by a stored provider definition (see providers/store).

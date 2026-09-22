@@ -15,6 +15,7 @@ export declare function postJson(options: {
     headers: Record<string, string>;
     body: string;
     delaysMs?: readonly number[];
+    timeoutMs?: number;
 }): Promise<Response>;
 /**
  * One round-trip against an OpenAI-compatible Chat Completions endpoint.
@@ -29,6 +30,7 @@ export declare function callOpenAiChat(options: {
     tools?: Record<string, unknown>[];
     fetchImpl?: typeof fetch;
     transportDelaysMs?: readonly number[];
+    timeoutMs?: number;
 }): Promise<{
     reply: NormalizedReply;
     assistantMessage: OpenAiMessage;
