@@ -36,6 +36,16 @@ function tailPlain(text: string, width: number): string {
 }
 
 /**
+ * In raw mode the terminal does no output post-processing, so a bare `\n`
+ * moves down WITHOUT returning the carriage — every following line then
+ * starts at the previous line's end column and the input box "climbs" the
+ * screen. All chat output goes out through this helper as CRLF.
+ */
+function withCrlf(text: string): string {
+  return text.replace(/\r?\n/gu, '\r\n');
+}
+
+/**
  * The interactive terminal surface: Claude Code-style scrollback chat with a
  * transient input box pinned to the bottom. Finished output stays in the
  * scrollback; only the bottom block (status line, input box, footer) is
@@ -83,7 +93,7 @@ export class ChatView {
 
   start(header: ChatHeaderInfo): void {
     this.#header = header;
-    process.stdout.write(renderChatHeader(this.#theme, header));
+    process.stdout.write(withCrlf(renderChatHeader(this.#theme, header)));
     this.#attachStdin();
     this.#renderBottom();
     this.#spinnerTimer = setInterval(() => {
@@ -120,7 +130,7 @@ export class ChatView {
   printLines(lines: string[]): void {
     if (lines.length === 0) return;
     this.#clearBottom();
-    process.stdout.write(`${lines.join('\n')}\n`);
+    process.stdout.write(`${withCrlf(lines.join('\n'))}\r\n`);
     this.#renderBottom();
   }
 
@@ -156,7 +166,7 @@ export class ChatView {
 
   clearScreen(): void {
     this.#clearBottom();
-    process.stdout.write(`\x1B[2J\x1B[H${renderChatHeader(this.#theme, this.#header)}`);
+    process.stdout.write(`\x1B[2J\x1B[H${withCrlf(renderChatHeader(this.#theme, this.#header))}`);
     this.#renderBottom();
   }
 
@@ -314,7 +324,11 @@ export class ChatView {
   }
 
   #clearBottom(): void {
-    if (this.#bottomRows > 0) process.stdout.write(`\x1B[${this.#bottomRows}A\r\x1B[J`);
+    // The cursor rests at the end of the block's LAST row, so climbing
+    // bottomRows rows would overshoot by one and repaint one row higher
+    // every cycle — the "input box rises while typing" bug.
+    if (this.#bottomRows > 0)
+      process.stdout.write(`\x1B[${Math.max(0, this.#bottomRows - 1)}A\r\x1B[J`);
     this.#bottomRows = 0;
   }
 
@@ -354,16 +368,18 @@ export class ChatView {
 
   #footer(): string {
     const theme = this.#theme;
-    const star = theme.accent('✳');
     const items = this.#busy
       ? ['esc interrupt', 'ctrl+p pause', 'ctrl+c exit']
       : [`${this.#options.approvalMode} approval`, '/help for commands', 'ctrl+c exit'];
-    return `${star} ${theme.muted(items.join(' · '))}`;
+    return theme.muted(items.join(' · '));
   }
 
   #writeBottom(lines: string[]): void {
     this.#clearBottom();
-    process.stdout.write(lines.join('\n'));
-    this.#bottomRows = lines.length;
+    const text = withCrlf(lines.join('\n'));
+    process.stdout.write(text);
+    // Count the rows the terminal will actually show: a status line with a
+    // queued task embeds a newline and occupies two rows.
+    this.#bottomRows = text.split('\r\n').length;
   }
 }
