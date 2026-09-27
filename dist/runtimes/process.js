@@ -1,5 +1,6 @@
 import { TextDecoder } from 'node:util';
 import spawn from 'cross-spawn';
+import { PausableTimer, trackProcess } from './suspend.js';
 const REPLACEMENT_CHAR = '\uFFFD';
 /**
  * Child CLIs normally write UTF-8, but Windows console programs emit localized
@@ -88,9 +89,10 @@ export function runProcess(command, args, cwd, timeoutMs, onActivity, stdinText)
         });
         let settled = false;
         let timedOut = false;
+        // Pausable: a frozen agent must not time out while the user has paused.
         const timer = timeoutMs === undefined
             ? undefined
-            : setTimeout(() => {
+            : new PausableTimer(timeoutMs, () => {
                 timedOut = true;
                 child.stdout?.removeAllListeners('data');
                 child.stderr?.removeAllListeners('data');
@@ -107,18 +109,19 @@ export function runProcess(command, args, cwd, timeoutMs, onActivity, stdinText)
                     settled = true;
                     reject(new Error(`Runtime timed out after ${timeoutMs}ms.`));
                 }
-            }, timeoutMs);
+            });
+        const untrack = trackProcess(child, timer);
         child.on('error', (error) => {
-            if (timer !== undefined)
-                clearTimeout(timer);
+            timer?.clear();
+            untrack();
             if (settled)
                 return;
             settled = true;
             reject(error);
         });
         child.on('close', (code) => {
-            if (timer !== undefined)
-                clearTimeout(timer);
+            timer?.clear();
+            untrack();
             if (settled || timedOut)
                 return;
             settled = true;

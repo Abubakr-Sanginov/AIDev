@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { decodeConsoleText } from '../runtimes/process.js';
+import { PausableTimer, trackProcess } from '../runtimes/suspend.js';
 import type { Tool } from './tool.js';
 import { safePath } from './path.js';
 
@@ -64,16 +65,19 @@ export const runCommandTool: Tool<z.infer<typeof input>> = {
       };
       child.stdout.on('data', append);
       child.stderr.on('data', append);
-      const timer = setTimeout(() => {
+      const timer = new PausableTimer(timeoutMs, () => {
         child.kill();
         reject(new Error(`Command timed out after ${timeoutMs}ms.`));
-      }, timeoutMs);
+      });
+      const untrack = trackProcess(child, timer);
       child.on('error', (error) => {
-        clearTimeout(timer);
+        timer.clear();
+        untrack();
         reject(error);
       });
       child.on('close', (code) => {
-        clearTimeout(timer);
+        timer.clear();
+        untrack();
         const output = decodeConsoleText(Buffer.concat(chunks));
         if (code !== 0) reject(new Error(`Command exited with code ${code}.\n${output}`));
         else resolve(output || `Command completed with code ${code}.`);

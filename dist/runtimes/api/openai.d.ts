@@ -16,7 +16,16 @@ export declare function postJson(options: {
     body: string;
     delaysMs?: readonly number[];
     timeoutMs?: number;
+    /** Hard-interrupt signal: when aborted, the request fails immediately and is never retried. */
+    signal?: AbortSignal;
 }): Promise<Response>;
+/** Input and output token counts as reported by a provider response. */
+export interface ProviderTokenUsage {
+    input: number;
+    output: number;
+}
+export declare function parseOpenAiUsage(payload: Record<string, unknown>): ProviderTokenUsage | undefined;
+export declare function parseAnthropicUsage(payload: Record<string, unknown>): ProviderTokenUsage | undefined;
 /**
  * One round-trip against an OpenAI-compatible Chat Completions endpoint.
  * The baseUrl already contains the API version segment (e.g. /v1), so only
@@ -31,7 +40,9 @@ export declare function callOpenAiChat(options: {
     fetchImpl?: typeof fetch;
     transportDelaysMs?: readonly number[];
     timeoutMs?: number;
+    signal?: AbortSignal;
 }): Promise<{
     reply: NormalizedReply;
     assistantMessage: OpenAiMessage;
+    tokens?: ProviderTokenUsage;
 }>;

@@ -8,6 +8,7 @@ import type { RuntimeModelDiscovery } from './runtime.js';
  * authentication), which is why exhausted providers never block a run.
  */
 export function autoModelCandidates(discovery: RuntimeModelDiscovery): string[] {
+  if (discovery.autoUsesDefault) return [];
   const free = new Set(discovery.freeModels ?? []);
   return [
     ...discovery.models.filter((model) => free.has(model)),
@@ -18,5 +19,7 @@ export function autoModelCandidates(discovery: RuntimeModelDiscovery): string[] 
 /** Human-readable label for interactive model choosers. */
 export function modelChoiceLabel(model: string, discovery: RuntimeModelDiscovery): string {
   const free = (discovery.freeModels ?? []).includes(model);
-  return free ? `${model}  [free]` : model;
+  const label = discovery.labels?.[model];
+  const base = label === undefined || label === model ? model : `${model}  — ${label}`;
+  return free ? `${base}  [free]` : base;
 }

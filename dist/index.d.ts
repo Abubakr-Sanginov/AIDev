@@ -17,7 +17,7 @@ export { allTools, executeTool } from './tools/index.js';
 export { PROVIDER_PROTOCOLS, RESERVED_PROVIDER_IDS, findPreset, isProviderProtocol, providerPresets, } from './providers/catalog.js';
 export type { ProviderPreset, ProviderProtocol } from './providers/catalog.js';
 export { maskKey } from './providers/mask.js';
-export { addCustom, addPreset, getProvider, listProviders, providersView, removeProvider, resolveKey, setKey, testProvider, } from './providers/store.js';
+export { addCustom, addPreset, getProvider, listProviders, providersView, removeProvider, updateProvider, clearKey, resolveKey, setKey, testProvider, } from './providers/store.js';
 export type { KeyResolution, ProviderView, StoredProvider, } from './providers/store.js';
 export { ApiProviderRuntime } from './runtimes/api/runtime.js';
 export type { ApiRuntimeOptions } from './runtimes/api/runtime.js';

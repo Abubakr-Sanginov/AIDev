@@ -12,6 +12,7 @@ import type {
   RuntimeState,
 } from '../src/runtimes/runtime.js';
 import { RuntimeOrchestrator } from '../src/runtimes/runtime-orchestrator.js';
+import { PauseGate } from '../src/pause.js';
 import { isReadOnlyRole } from '../src/roles.js';
 import { CodexRuntime } from '../src/runtimes/codex/runtime.js';
 import { ClaudeCodeRuntime } from '../src/runtimes/claude-code/runtime.js';
@@ -370,6 +371,44 @@ describe('runtime orchestration', () => {
     }).run('Build a TODO API');
     expect(state.status).toBe('DONE');
     expect(state.events.find((event) => event.roleId === 'browser')?.status).toBe('SKIPPED');
+  });
+
+  it('starts no stage while paused and continues after resume', async () => {
+    const runtime = new RecordingRuntime({
+      backend: [{ kind: 'success', output: 'api' }],
+      reviewer: [{ kind: 'success', output: 'APPROVED' }],
+    });
+    const gate = new PauseGate();
+    gate.pause();
+    const run = new RuntimeOrchestrator({ root: '.', runtime, pauseGate: gate }).run(
+      'Build a TODO API',
+    );
+    // The workflow reaches the gate after preparing the project, then holds.
+    for (let waited = 0; gate.phase !== 'paused' && waited < 5_000; waited += 10)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(gate.phase).toBe('paused');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(runtime.launchedRoleIds).toEqual([]);
+    gate.resume();
+    const state = await run;
+    expect(state.status).toBe('DONE');
+    expect(runtime.launchedRoleIds[0]).toBe('manager');
+    const pauseEvents = state.events
+      .filter((event) => event.roleId === 'user')
+      .map((event) => event.message);
+    expect(pauseEvents).toEqual(['Paused. Press p to resume.', 'Resumed.']);
+    expect(state.pausedMs).toBeGreaterThan(0);
+    expect(state.pause).toBeUndefined();
+  });
+
+  it('hands in-process runtimes the pause hook', async () => {
+    const runtime = new RecordingRuntime({ reviewer: [{ kind: 'success', output: 'APPROVED' }] });
+    await new RuntimeOrchestrator({ root: '.', runtime, pauseGate: new PauseGate() }).run(
+      'Build a TODO API',
+    );
+    expect(runtime.executions.every((entry) => entry.request.waitIfPaused !== undefined)).toBe(
+      true,
+    );
   });
 
   it('marks a role FAILED only after every attempt is exhausted', async () => {

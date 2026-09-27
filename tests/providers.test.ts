@@ -6,6 +6,7 @@ import { maskKey } from '../src/providers/mask.js';
 import {
   addCustom,
   addPreset,
+  clearKey,
   getProvider,
   listProviders,
   providersFilePath,
@@ -13,6 +14,7 @@ import {
   removeProvider,
   resolveKey,
   setKey,
+  updateProvider,
 } from '../src/providers/store.js';
 import { ApiProviderRuntime } from '../src/runtimes/api/runtime.js';
 
@@ -43,6 +45,76 @@ describe('provider store', () => {
     expect(Object.keys(raw.providers)).toContain('openai');
     // Nothing provider-related is written into the project any more.
     await expect(access(path.join(root, '.ai-dev-team', 'providers.json'))).rejects.toThrow();
+  });
+
+  it('edits a provider in place and keeps its key', async () => {
+    const root = await tempRoot();
+    await addCustom(
+      root,
+      {
+        id: 'atria',
+        name: 'Atria',
+        protocol: 'openai',
+        baseUrl: 'https://api.atria.test/v1',
+        models: ['Dawn'],
+      },
+      'sk-atria-1234567890abcdef',
+    );
+    const updated = await updateProvider(root, 'atria', {
+      baseUrl: 'https://api2.atria.test/v1/',
+      models: ['Dawn', 'Dusk', 'Dawn'],
+      apiKeyEnv: 'ATRIA_KEY',
+    });
+    expect(updated).toMatchObject({
+      baseUrl: 'https://api2.atria.test/v1',
+      models: ['Dawn', 'Dusk'],
+      apiKeyEnv: 'ATRIA_KEY',
+    });
+    expect(await resolveKey(root, 'atria')).toMatchObject({
+      ok: true,
+      key: 'sk-atria-1234567890abcdef',
+    });
+    expect((await updateProvider(root, 'atria', { apiKeyEnv: null })).apiKeyEnv).toBeUndefined();
+  });
+
+  it('rejects an edit that would leave the provider invalid', async () => {
+    const root = await tempRoot();
+    await addCustom(root, {
+      id: 'atria',
+      name: 'Atria',
+      protocol: 'openai',
+      baseUrl: 'https://api.atria.test/v1',
+      models: ['Dawn'],
+    });
+    await expect(updateProvider(root, 'atria', { models: [] })).rejects.toThrow(
+      /at least one model/,
+    );
+    await expect(updateProvider(root, 'atria', { baseUrl: 'http://remote.test' })).rejects.toThrow(
+      /https/,
+    );
+    await expect(updateProvider(root, 'missing', { name: 'x' })).rejects.toThrow(
+      /Unknown provider/,
+    );
+    expect((await getProvider(root, 'atria'))?.models).toEqual(['Dawn']);
+  });
+
+  it('replaces and clears the stored key', async () => {
+    const root = await tempRoot();
+    await addCustom(
+      root,
+      {
+        id: 'atria',
+        name: 'Atria',
+        protocol: 'openai',
+        baseUrl: 'https://api.atria.test/v1',
+        models: ['Dawn'],
+      },
+      'sk-old-1234567890abcdef',
+    );
+    await setKey(root, 'atria', 'sk-new-1234567890abcdef');
+    expect(await resolveKey(root, 'atria')).toMatchObject({ key: 'sk-new-1234567890abcdef' });
+    await clearKey(root, 'atria');
+    expect(await resolveKey(root, 'atria')).toEqual({ ok: false, reason: 'missing' });
   });
 
   it('shares providers, models and keys across projects', async () => {
@@ -119,7 +191,7 @@ describe('provider store', () => {
     );
     const ids = (await listProviders(root)).map((provider) => provider.id);
     expect(ids).toEqual(['mycorp']);
-    expect((await resolveKey(root, 'mycorp'))).toEqual({
+    expect(await resolveKey(root, 'mycorp')).toEqual({
       ok: true,
       key: 'sk-mycorp-1234567890abcdef',
       source: 'stored',

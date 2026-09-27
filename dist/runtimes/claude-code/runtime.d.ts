@@ -1,5 +1,10 @@
-import type { AgentRequest, AuthResult, CodingRuntime, InstallInstructions, InstallResult, LaunchOptions, RuntimeDetection, RuntimeResult, RuntimeSession, RuntimeState } from '../runtime.js';
+import type { AgentRequest, AuthResult, CodingRuntime, InstallInstructions, InstallResult, LaunchOptions, RuntimeDetection, RuntimeModelDiscovery, RuntimeResult, RuntimeSession, RuntimeState } from '../runtime.js';
 import { type ProcessRunner } from '../process.js';
+/** Aliases `claude --model` resolves to the newest model of each family. */
+export declare const CLAUDE_MODEL_ALIASES: ReadonlyArray<{
+    id: string;
+    label: string;
+}>;
 import type { TerminalLauncher } from '../../terminal/terminal.js';
 export declare class ClaudeCodeRuntime implements CodingRuntime {
     #private;
@@ -10,10 +15,7 @@ export declare class ClaudeCodeRuntime implements CodingRuntime {
     getInstallInstructions(): InstallInstructions;
     install(): Promise<InstallResult>;
     authenticate(workingDirectory: string): Promise<AuthResult>;
-    discoverModels(): Promise<{
-        models: string[];
-        message?: string;
-    }>;
+    discoverModels(): Promise<RuntimeModelDiscovery>;
     launch(options: LaunchOptions): Promise<RuntimeSession>;
     execute(session: RuntimeSession, request: AgentRequest): Promise<RuntimeResult>;
     pause(session: RuntimeSession): Promise<void>;

@@ -30,6 +30,8 @@ export {
   listProviders,
   providersView,
   removeProvider,
+  updateProvider,
+  clearKey,
   resolveKey,
   setKey,
   testProvider,

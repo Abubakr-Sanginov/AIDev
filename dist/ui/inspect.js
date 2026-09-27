@@ -186,6 +186,7 @@ export function renderHelpView(theme, viewport) {
         '                      5 Coder, 6 Tester, 7 Fixer, 8 Reviewer)',
         '  ↑ / ↓               scroll one line        PgUp / PgDn  scroll one page',
         '  Home / End          jump to top / latest   Esc / q      close the open view',
+        '  p                   pause / resume the whole run (agents are frozen, the timer stops)',
         '',
         theme.muted('Everything runs on the alternate screen buffer: closing restores your terminal.'),
     ];

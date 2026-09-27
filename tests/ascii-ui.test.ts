@@ -25,11 +25,7 @@ import {
   renderHelpView,
   wrapText,
 } from '../src/ui/inspect.js';
-import {
-  INITIAL_UI_STATE,
-  parseTerminalInput,
-  reduceUiEvent,
-} from '../src/ui/interactive.js';
+import { INITIAL_UI_STATE, parseTerminalInput, reduceUiEvent } from '../src/ui/interactive.js';
 import { loadConfig, resetConfig, setConfigValue } from '../src/config.js';
 import { appendRunRecord, listRunRecords } from '../src/history.js';
 import { buildReport } from '../src/report.js';
@@ -117,7 +113,11 @@ describe('interactive ui', () => {
     expect(opened.view).toEqual({ kind: 'activity' });
     const scrolled = reduceUiEvent(opened, { type: 'key', key: 'page-up' }, 10);
     expect(scrolled.scroll).toBe(10);
-    const clamped = reduceUiEvent(scrolled, { type: 'mouse', button: 'wheel-down', x: 1, y: 1 }, 10);
+    const clamped = reduceUiEvent(
+      scrolled,
+      { type: 'mouse', button: 'wheel-down', x: 1, y: 1 },
+      10,
+    );
     expect(clamped.scroll).toBe(7);
     const digit = reduceUiEvent(INITIAL_UI_STATE, { type: 'key', key: '2' }, 10);
     expect(digit.view).toEqual({ kind: 'agent', roleId: 'architect' });
@@ -307,9 +307,7 @@ describe('ascii ui', () => {
     // Low-value events stay hidden unless verbose mode is on.
     const noisy = renderDashboard(
       sampleState({
-        events: [
-          { roleId: 'coder', status: 'ACTIVE', message: 'OpenCode event: tool_use' },
-        ],
+        events: [{ roleId: 'coder', status: 'ACTIVE', message: 'OpenCode event: tool_use' }],
       }),
       '/tmp/project',
       mono,
@@ -363,6 +361,34 @@ describe('run history', () => {
     });
     const records = await listRunRecords(root);
     expect(records.map((record) => record.goal)).toEqual(['two', 'one']);
+  });
+});
+
+describe('paused dashboard', () => {
+  it('shows the pause and leaves paused time out of the elapsed time', () => {
+    const now = Date.parse('2026-08-21T10:30:00.000Z');
+    const state = sampleState({
+      status: 'RUNNING',
+      startedAt: '2026-08-21T10:00:00.000Z',
+      pause: 'paused',
+      pausedAt: '2026-08-21T10:20:00.000Z',
+      pausedMs: 5 * 60_000,
+    });
+    const output = renderDashboard(state, '/tmp/project', mono, { maxWidth: 110, now });
+    expect(output).toContain('[ PAUSED ]');
+    // 30 min wall clock − 5 min earlier pause − 10 min current pause.
+    expect(output).toContain('Elapsed: 15m 0s');
+    expect(output).toContain('paused — press p to resume');
+  });
+
+  it('says the pause is still settling while a step finishes', () => {
+    const output = renderDashboard(
+      sampleState({ status: 'RUNNING', pause: 'pausing', pausedAt: new Date().toISOString() }),
+      '/tmp/project',
+      mono,
+      { maxWidth: 110 },
+    );
+    expect(output).toContain('[ PAUSING ]');
   });
 });
 

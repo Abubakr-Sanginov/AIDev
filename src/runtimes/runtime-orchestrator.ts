@@ -1,4 +1,6 @@
 import { readdir } from 'node:fs/promises';
+import type { PauseGate, PausePhase } from '../pause.js';
+import { PauseCancelledError } from '../pause.js';
 import type { CodingRuntime, RuntimeResult, RuntimeSession } from './runtime.js';
 import { isFatalDiagnostic, isProviderDiagnostic } from './failure-policy.js';
 import { getRole, isReadOnlyRole, roles } from '../roles.js';
@@ -28,10 +30,18 @@ export interface RuntimeWorkflowState {
   completedPhases?: number;
   totalPhases?: number;
   currentRoleId?: string;
+  /** Set while the user has paused the run (`pausing` until work actually stops). */
+  pause?: 'pausing' | 'paused';
+  /** When the current pause was requested; unset while running. */
+  pausedAt?: string;
+  /** Total length of finished pauses, excluded from the elapsed time. */
+  pausedMs?: number;
   /** Why a finished workflow is FAILED when no individual agent failed. */
   failureReason?: string;
   /** Model currently serving the workflow (Auto rotation keeps it current). */
   model?: string;
+  /** Cumulative prompt + completion tokens reported by API providers. */
+  tokensUsed?: number;
   projectContext?: ProjectContext;
 }
 export interface RuntimeWorkflowOptions {
@@ -58,6 +68,8 @@ export interface RuntimeWorkflowOptions {
    * `VERDICT: FAIL` line, so it routes to the fixer like any tester defect.
    */
   browserCheck?(onActivity: (message: string) => void): Promise<BrowserCheckOutcome | undefined>;
+  /** User pause switch: the workflow waits on it before every stage and request. */
+  pauseGate?: PauseGate;
 }
 
 export interface BrowserCheckOutcome {
@@ -107,11 +119,13 @@ export class RuntimeOrchestrator {
   #scheduledRoles: string[] = [];
   #fatalDiagnostic?: string;
   readonly #browserCheck: RuntimeWorkflowOptions['browserCheck'];
+  readonly #pauseGate: PauseGate | undefined;
   #browserFailed = false;
 
   constructor(options: RuntimeWorkflowOptions) {
     this.#root = options.root;
     this.#browserCheck = options.browserCheck;
+    this.#pauseGate = options.pauseGate;
     this.#runtime = options.runtime;
     this.#maxFixAttempts = options.maxFixAttempts ?? 2;
     this.#visibleRuntime = options.visibleRuntime ?? false;
@@ -130,6 +144,23 @@ export class RuntimeOrchestrator {
 
   get #activeModel(): string | undefined {
     return this.#modelCandidates[this.#modelIndex];
+  }
+
+  /** True once the user hard-interrupted the run (the chat UI's Esc). */
+  // A method, not a getter: a property read would be control-flow-narrowed to
+  // `false` after the first check and every later check would look dead.
+  #isInterrupted(): boolean {
+    return this.#pauseGate?.cancelled ?? false;
+  }
+
+  /** Hard-stop path: mark the run cancelled-failed and unwind immediately. */
+  async #abortRun(state: RuntimeWorkflowState): Promise<RuntimeWorkflowState> {
+    state.status = 'FAILED';
+    state.failureReason = 'Interrupted by user.';
+    delete state.currentRoleId;
+    await this.#terminalize(state);
+    await this.#publish(state);
+    return state;
   }
 
   /** Advances to the next Auto candidate; undefined when the list is exhausted. */
@@ -162,6 +193,29 @@ export class RuntimeOrchestrator {
       ...(this.#activeModel === undefined ? {} : { model: this.#activeModel }),
       projectContext,
     };
+    const stopWatchingPause = this.#watchPause(state);
+    try {
+      return await this.#runStages(
+        state,
+        goal,
+        projectContext,
+        projectSummary,
+        implementationRoles,
+        skippedLayers,
+      );
+    } finally {
+      stopWatchingPause();
+    }
+  }
+
+  async #runStages(
+    state: RuntimeWorkflowState,
+    goal: string,
+    projectContext: ProjectContext,
+    projectSummary: string,
+    implementationRoles: string[],
+    skippedLayers: string[],
+  ): Promise<RuntimeWorkflowState> {
     const artifacts: Record<string, string> = {};
     for (const roleId of skippedLayers) {
       artifacts[roleId] =
@@ -190,13 +244,15 @@ export class RuntimeOrchestrator {
       state,
       'Manager failed; continue from the customer request.',
     );
+    if (this.#isInterrupted()) return this.#abortRun(state);
     artifacts.architect = await this.#safeExecute(
       'architect',
       this.#artifactHandoff(goal, artifacts, projectSummary),
       state,
       'Architecture unavailable; continue conservatively and report the gap.',
     );
-    for (const roleId of implementationRoles)
+    if (this.#isInterrupted()) return this.#abortRun(state);
+    for (const roleId of implementationRoles) {
       artifacts[roleId] = await this.#safeExecute(
         roleId,
         this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE,
@@ -204,6 +260,8 @@ export class RuntimeOrchestrator {
         `${roleId} failed; continue independent work and report the gap.`,
         verifyArtifacts,
       );
+      if (this.#isInterrupted()) return this.#abortRun(state);
+    }
     let missingArtifacts = initialProjectArtifacts === 0 && (await this.#projectArtifacts()) === 0;
     if (missingArtifacts) {
       artifacts.artifactVerification =
@@ -217,17 +275,20 @@ export class RuntimeOrchestrator {
       state,
       'Testing unavailable; Reviewer must report the verification gap.',
     );
+    if (this.#isInterrupted()) return this.#abortRun(state);
     if (missingArtifacts)
       artifacts.tester = `${artifacts.tester}\n${artifacts.artifactVerification}`;
     artifacts.tester = await this.#withBrowserCheck(artifacts.tester, state);
     if (this.#reportsDefects(artifacts.tester)) {
       for (let attempt = 0; attempt < this.#maxFixAttempts; attempt += 1) {
+        if (this.#isInterrupted()) return this.#abortRun(state);
         artifacts.fixer = await this.#safeExecute(
           'fixer',
           this.#artifactHandoff(goal, artifacts, projectSummary) + IMPLEMENTATION_DIRECTIVE,
           state,
           'Fix failed; preserve defect for review.',
         );
+        if (this.#isInterrupted()) return this.#abortRun(state);
         // Cycles where the fixer never actually ran (e.g. skipped after a
         // fatal runtime failure) must not count as fix attempts.
         if (!artifacts.fixer.startsWith('[UNAVAILABLE ')) state.attempts += 1;
@@ -294,6 +355,38 @@ export class RuntimeOrchestrator {
   }
 
   /**
+   * Mirrors the pause switch into the workflow state: an Activity line for
+   * each transition, and the paused span tracked so the elapsed time can
+   * leave it out.
+   */
+  #watchPause(state: RuntimeWorkflowState): () => void {
+    const gate = this.#pauseGate;
+    if (gate === undefined) return () => undefined;
+    let last: PausePhase = 'running';
+    return gate.onChange((phase) => {
+      if (phase === last) return;
+      const previous = last;
+      last = phase;
+      if (phase === 'running') {
+        if (state.pausedAt !== undefined)
+          state.pausedMs =
+            (state.pausedMs ?? 0) + Math.max(0, Date.now() - Date.parse(state.pausedAt));
+        delete state.pausedAt;
+        delete state.pause;
+        this.#event(state, 'user', 'ACTIVE', 'Resumed.');
+      } else {
+        state.pausedAt ??= new Date().toISOString();
+        state.pause = phase;
+        if (phase === 'pausing')
+          this.#event(state, 'user', 'ACTIVE', 'Pausing: the current step finishes first.');
+        else if (previous !== 'paused')
+          this.#event(state, 'user', 'ACTIVE', 'Paused. Press p to resume.');
+      }
+      void this.#publish(state);
+    });
+  }
+
+  /**
    * Runs the browser check and appends its report to the tester artifact.
    * Its events use the pseudo-role `browser`: they show in Activity without
    * touching agent rows, so the tester stays DONE and nothing is cancelled.
@@ -301,6 +394,7 @@ export class RuntimeOrchestrator {
   async #withBrowserCheck(tester: string, state: RuntimeWorkflowState): Promise<string> {
     this.#browserFailed = false;
     if (this.#browserCheck === undefined) return tester;
+    await this.#pauseGate?.wait();
     let outcome: BrowserCheckOutcome | undefined;
     try {
       outcome = await this.#browserCheck((message) => {
@@ -310,7 +404,10 @@ export class RuntimeOrchestrator {
     } catch (error) {
       // A crash in the check itself says nothing about the site; never fail on it.
       const message = error instanceof Error ? error.message : String(error);
-      outcome = { status: 'skipped', report: `## Browser check\nSkipped: the check crashed: ${message}` };
+      outcome = {
+        status: 'skipped',
+        report: `## Browser check\nSkipped: the check crashed: ${message}`,
+      };
     }
     if (outcome === undefined) {
       this.#event(state, 'browser', 'SKIPPED', 'No web app to open; browser check skipped.');
@@ -357,6 +454,11 @@ export class RuntimeOrchestrator {
     fallback: string,
     verify?: () => Promise<string | undefined>,
   ): Promise<string> {
+    if (this.#isInterrupted()) {
+      this.#event(state, roleId, 'CANCELLED', 'Interrupted by user.');
+      await this.#publish(state);
+      return `[CANCELLED ${roleId}] Interrupted by user.`;
+    }
     if (this.#fatalDiagnostic !== undefined) {
       this.#event(
         state,
@@ -378,6 +480,13 @@ export class RuntimeOrchestrator {
         return (await this.#execute(roleId, prompt + diagnosticContext, state, attempt, verify))
           .output;
       } catch (error) {
+        // A hard interrupt never retries and never rotates models: the run is
+        // over, and the remaining stages unwind through the same CANCELLED path.
+        if (error instanceof PauseCancelledError || this.#isInterrupted()) {
+          this.#event(state, roleId, 'CANCELLED', 'Interrupted by user.');
+          await this.#publish(state);
+          return `[CANCELLED ${roleId}] Interrupted by user.`;
+        }
         diagnostic = error instanceof Error ? error.message : String(error);
         if (isFatalDiagnostic(diagnostic)) {
           // Billing/quota/auth failures kill the current model, not the stage:
@@ -508,6 +617,7 @@ export class RuntimeOrchestrator {
     verify?: () => Promise<string | undefined>,
   ): Promise<RuntimeResult> {
     const role = getRole(roleId);
+    await this.#pauseGate?.wait();
     const session = await this.#runtime.launch({
       workingDirectory: this.#root,
       roleId,
@@ -547,6 +657,12 @@ export class RuntimeOrchestrator {
         maxToolCalls: role.budget.maxToolCalls,
         toolPolicy: isReadOnlyRole(roleId) ? 'read-only' : 'coding',
         ...(activeModel === undefined ? {} : { model: activeModel }),
+        ...(this.#pauseGate === undefined
+          ? {}
+          : {
+              waitIfPaused: () => this.#pauseGate?.wait() ?? Promise.resolve(),
+              signal: this.#pauseGate.signal,
+            }),
         onActivity: async (activity) => {
           if (!acceptingActivity || state.status !== 'RUNNING') return;
           this.#event(state, roleId, 'ACTIVE', activity.message);
@@ -555,13 +671,19 @@ export class RuntimeOrchestrator {
       });
       acceptingActivity = false;
       clearInterval(heartbeat);
+      if (result.tokensUsed !== undefined)
+        state.tokensUsed = (state.tokensUsed ?? 0) + result.tokensUsed;
       if (!result.success)
-        throw new Error(result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`);
+        throw new Error(
+          result.output.trim() || `Runtime exited with code ${result.exitCode ?? 'unknown'}.`,
+        );
       if (verify !== undefined) {
         const problem = await verify();
         if (problem !== undefined) {
           const reply = result.output.trim().replaceAll(/\s+/gu, ' ');
-          throw new Error(reply === '' ? problem : `${problem} Agent reply: ${reply.slice(0, 400)}`);
+          throw new Error(
+            reply === '' ? problem : `${problem} Agent reply: ${reply.slice(0, 400)}`,
+          );
         }
       }
       this.#event(state, roleId, 'DONE', result.output);

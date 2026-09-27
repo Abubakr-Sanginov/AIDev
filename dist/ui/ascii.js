@@ -9,6 +9,7 @@ const MONO_THEME = {
     success: identity,
     failure: identity,
     muted: identity,
+    bold: identity,
     banner: [identity, identity, identity, identity, identity, identity],
 };
 const THEMES = {
@@ -20,6 +21,7 @@ const THEMES = {
         success: chalk.green,
         failure: chalk.red,
         muted: chalk.gray,
+        bold: chalk.bold,
         banner: [
             chalk.cyanBright,
             chalk.cyan,
@@ -37,6 +39,7 @@ const THEMES = {
         success: chalk.greenBright,
         failure: chalk.redBright,
         muted: chalk.gray,
+        bold: chalk.bold,
         banner: [
             chalk.blue,
             chalk.blueBright,
@@ -54,6 +57,7 @@ const THEMES = {
         success: chalk.greenBright,
         failure: chalk.red,
         muted: chalk.gray,
+        bold: chalk.bold,
         banner: [
             chalk.green,
             chalk.greenBright,
@@ -152,7 +156,11 @@ export function statusBadge(status, theme) {
         return theme.success(text);
     if (status === 'FAILED' || status === 'CANCELLED')
         return theme.failure(text);
-    if (status === 'RUNNING' || status === 'ACTIVE' || status === 'RETRYING')
+    if (status === 'RUNNING' ||
+        status === 'ACTIVE' ||
+        status === 'RETRYING' ||
+        status === 'PAUSED' ||
+        status === 'PAUSING')
         return theme.accent(text);
     return theme.muted(text);
 }
@@ -189,20 +197,32 @@ export function hitTest(rects, x, y) {
     }
     return match;
 }
+/** Time spent paused by the user: finished pauses plus the one in progress. */
+export function pausedDurationMs(state, now) {
+    const current = state.pausedAt === undefined ? 0 : Math.max(0, now - Date.parse(state.pausedAt));
+    return (state.pausedMs ?? 0) + (Number.isNaN(current) ? 0 : current);
+}
 export function renderDashboard(state, root, theme, options = {}) {
     const completed = state.completedPhases ?? 0;
     const total = state.totalPhases ?? 5;
     const now = options.now ?? Date.now();
     const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
     const finishedMs = state.status === 'RUNNING' || !state.updatedAt ? now : Date.parse(state.updatedAt);
-    const elapsedMs = Number.isNaN(startedMs) ? 0 : Math.max(0, finishedMs - startedMs);
+    const elapsedMs = Number.isNaN(startedMs)
+        ? 0
+        : Math.max(0, finishedMs - startedMs - pausedDurationMs(state, finishedMs));
     const eta = estimateEtaMs(completed, total, elapsedMs);
     const latest = new Map(state.events.map((event) => [event.roleId, event.status]));
     const visibleEvents = state.events.filter((candidate) => options.verbose || !LOW_VALUE_ACTIVITY.test(candidate.message));
     const event = [...visibleEvents].reverse()[0];
     const retry = [...state.events].reverse().find((candidate) => candidate.status === 'RETRYING');
     const attempt = event?.attempt ? `${event.attempt}/${event.maxAttempts ?? event.attempt}` : '-';
-    const spinner = state.status === 'RUNNING' ? `${spinnerFrame(now)} ` : '';
+    const spinner = state.status === 'RUNNING' && state.pause === undefined ? `${spinnerFrame(now)} ` : '';
+    const shownStatus = state.status !== 'RUNNING' || state.pause === undefined
+        ? state.status
+        : state.pause === 'paused'
+            ? 'PAUSED'
+            : 'PAUSING';
     const lastEvent = state.events.at(-1);
     const lastEventMs = lastEvent?.timestamp === undefined ? Number.NaN : Date.parse(lastEvent.timestamp);
     const idleMs = Number.isNaN(lastEventMs) ? undefined : Math.max(0, now - lastEventMs);
@@ -221,20 +241,24 @@ export function renderDashboard(state, root, theme, options = {}) {
         return block;
     };
     const overview = panel('Overview', [
-        `${spinner}${theme.secondary('Status:')} ${statusBadge(state.status, theme)}   ${theme.secondary('Elapsed:')} ${formatDuration(elapsedMs)}${eta === undefined ? '' : `   ${theme.secondary('ETA:')} ~${formatDuration(eta)}`}`,
+        `${spinner}${theme.secondary('Status:')} ${statusBadge(shownStatus, theme)}   ${theme.secondary('Elapsed:')} ${formatDuration(elapsedMs)}${eta === undefined ? '' : `   ${theme.secondary('ETA:')} ~${formatDuration(eta)}`}`,
         `${theme.accent(progressBar(completed, total))} ${theme.muted(`(${completed}/${total} phases)`)}`,
         `${theme.secondary('Goal:')}  ${state.goal.slice(0, 96)}`,
         `${theme.secondary('Path:')}  ${root}`,
         `${theme.secondary('Model:')} ${state.model ?? theme.muted('runtime default')}`,
         `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
-        theme.muted('Clicks: this panel, Activity, agent rows · keys: g a h 1-8 · Esc closes'),
+        theme.muted('Clicks: this panel, Activity, agent rows · keys: g a h 1-8 · p pause · Esc closes'),
     ], theme, options.maxWidth);
     const agents = panel('Agents', roles.map((role) => ` ${theme.accent('▸')} ${role.name.padEnd(19)} ${statusBadge(latest.get(role.id) ?? 'WAITING', theme)}`), theme, options.maxWidth);
-    const idleLabel = idleMs === undefined
-        ? 'unknown'
-        : idleMs > 60_000
-            ? theme.accent(`${formatDuration(idleMs)} — model is still generating, no new events yet`)
-            : formatDuration(idleMs);
+    const idleLabel = state.status === 'RUNNING' && state.pause === 'paused'
+        ? theme.accent('paused — press p to resume')
+        : state.status === 'RUNNING' && state.pause === 'pausing'
+            ? theme.accent('pausing — the current step finishes, then everything stops')
+            : idleMs === undefined
+                ? 'unknown'
+                : idleMs > 60_000
+                    ? theme.accent(`${formatDuration(idleMs)} — model is still generating, no new events yet`)
+                    : formatDuration(idleMs);
     const recentActivity = [...visibleEvents].slice(-ACTIVITY_PANEL_ROWS);
     const activity = panel('Activity', [
         // A short inline history: role, status badge, and the first line of each
@@ -276,7 +300,7 @@ export function renderSummary(state, theme, maxWidth) {
     const finishedMs = state.updatedAt ? Date.parse(state.updatedAt) : Date.now();
     const duration = Number.isNaN(startedMs)
         ? 'unknown'
-        : formatDuration(Math.max(0, finishedMs - startedMs));
+        : formatDuration(Math.max(0, finishedMs - startedMs - pausedDurationMs(state, finishedMs)));
     const headline = state.status === 'DONE'
         ? theme.success('✔ Implementation, verification, and review completed.')
         : theme.failure(`✖ ${failureHeadline(state, failedRoles)}`);

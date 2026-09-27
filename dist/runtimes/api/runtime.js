@@ -128,7 +128,12 @@ export class ApiProviderRuntime {
                 ? Math.max(softCalls * 5, 100)
                 : 500;
             let toolCallsUsed = 0;
+            let tokensUsed = 0;
             let budgetWarned = false;
+            const addTokens = (usage) => {
+                if (usage !== undefined)
+                    tokensUsed += usage.input + usage.output;
+            };
             const budgetWarning = () => `Budget warning: you have used ${toolCallsUsed} tool calls (planned budget ${Number.isFinite(softCalls) ? softCalls : 'unlimited'}). ` +
                 'Do not call any more tools unless strictly required: finish now with your final artifact ' +
                 '(status, summary, decisions, files changed, commands run, risks, handoff).';
@@ -162,6 +167,7 @@ export class ApiProviderRuntime {
                 catch {
                     return { content: `Invalid tool arguments JSON for '${call.name}'.`, isError: true };
                 }
+                await request.waitIfPaused?.();
                 await report(request, { type: 'output', message: `Tool call: ${call.name}` });
                 const context = { root: session.workingDirectory, approve: this.#approve };
                 const result = await toolsModule.executeTool(tool, input, context);
@@ -178,7 +184,8 @@ export class ApiProviderRuntime {
                     { role: 'user', content: 'Proceed with the task described in the system message.' },
                 ];
                 for (let step = 0; step < hardSteps; step++) {
-                    const { reply, assistantMessage } = await callOpenAiChat({
+                    await request.waitIfPaused?.();
+                    const { reply, assistantMessage, tokens } = await callOpenAiChat({
                         baseUrl: this.#provider.baseUrl,
                         apiKey: resolution.key,
                         model,
@@ -187,7 +194,9 @@ export class ApiProviderRuntime {
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
                         ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
                         ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
+                        ...(request.signal === undefined ? {} : { signal: request.signal }),
                     });
+                    addTokens(tokens);
                     messages.push(assistantMessage);
                     if (reply.toolCalls.length === 0) {
                         finalText = reply.text;
@@ -213,7 +222,8 @@ export class ApiProviderRuntime {
             else {
                 const messages = [{ role: 'user', content: request.prompt }];
                 for (let step = 0; step < hardSteps; step++) {
-                    const { reply, assistantContent } = await callAnthropicMessages({
+                    await request.waitIfPaused?.();
+                    const { reply, assistantContent, tokens } = await callAnthropicMessages({
                         baseUrl: this.#provider.baseUrl,
                         apiKey: resolution.key,
                         model,
@@ -223,7 +233,9 @@ export class ApiProviderRuntime {
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
                         ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
                         ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
+                        ...(request.signal === undefined ? {} : { signal: request.signal }),
                     });
+                    addTokens(tokens);
                     messages.push({ role: 'assistant', content: assistantContent });
                     if (reply.toolCalls.length === 0) {
                         finalText = reply.text;
@@ -250,7 +262,13 @@ export class ApiProviderRuntime {
                 }
             }
             session.status = 'completed';
-            return { success: true, output: finalText, sessionId: session.id, exitCode: 0 };
+            return {
+                success: true,
+                output: finalText,
+                sessionId: session.id,
+                exitCode: 0,
+                ...(tokensUsed > 0 ? { tokensUsed } : {}),
+            };
         }
         catch (error) {
             session.status = 'failed';

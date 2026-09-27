@@ -1,4 +1,4 @@
-import { postJson } from './openai.js';
+import { postJson, parseAnthropicUsage } from './openai.js';
 export const ANTHROPIC_VERSION = '2023-06-01';
 function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -56,6 +56,7 @@ export async function callAnthropicMessages(options) {
         body: JSON.stringify(body),
         ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
         ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
     });
     if (!response.ok)
         throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
@@ -66,8 +67,10 @@ export async function callAnthropicMessages(options) {
     const assistantContent = Array.isArray(payload.content)
         ? payload.content.filter(isRecord)
         : [{ type: 'text', text: parsed.text }];
+    const tokens = parseAnthropicUsage(payload);
     return {
         reply: { text: parsed.text, toolCalls: parsed.toolCalls },
         assistantContent,
+        ...(tokens === undefined ? {} : { tokens }),
     };
 }

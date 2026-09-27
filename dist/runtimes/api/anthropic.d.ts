@@ -1,3 +1,4 @@
+import { type ProviderTokenUsage } from './openai.js';
 import type { NormalizedReply } from './tools.js';
 export type AnthropicMessage = Record<string, unknown>;
 export type AnthropicContentBlock = Record<string, unknown>;
@@ -17,7 +18,9 @@ export declare function callAnthropicMessages(options: {
     fetchImpl?: typeof fetch;
     transportDelaysMs?: readonly number[];
     timeoutMs?: number;
+    signal?: AbortSignal;
 }): Promise<{
     reply: NormalizedReply;
     assistantContent: AnthropicContentBlock[];
+    tokens?: ProviderTokenUsage;
 }>;

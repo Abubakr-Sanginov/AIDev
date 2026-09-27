@@ -1,8 +1,55 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { buildLogFollowerOptions } from '../../terminal/log-follower.js';
 import { runProcess } from '../process.js';
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Reads the model list the Codex CLI caches for the signed-in account
+ * (`$CODEX_HOME/models_cache.json`), in the order Codex itself shows it:
+ * hidden entries dropped, lower `priority` first.
+ */
+export function parseCodexModelsCache(raw) {
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    }
+    catch {
+        return [];
+    }
+    if (!isRecord(parsed) || !Array.isArray(parsed.models))
+        return [];
+    const entries = [];
+    for (const entry of parsed.models) {
+        if (!isRecord(entry) || typeof entry.slug !== 'string' || entry.slug === '')
+            continue;
+        if (typeof entry.visibility === 'string' && entry.visibility !== 'list')
+            continue;
+        const description = typeof entry.description === 'string' ? entry.description : '';
+        entries.push({
+            id: entry.slug,
+            label: description,
+            priority: typeof entry.priority === 'number' ? entry.priority : Number.MAX_SAFE_INTEGER,
+        });
+    }
+    entries.sort((a, b) => a.priority - b.priority);
+    const seen = new Set();
+    return entries
+        .filter((entry) => {
+        if (seen.has(entry.id))
+            return false;
+        seen.add(entry.id);
+        return true;
+    })
+        .map(({ id, label }) => ({ id, label }));
+}
+export function codexHome() {
+    const override = process.env.CODEX_HOME?.trim();
+    return override ? path.resolve(override) : path.join(homedir(), '.codex');
+}
 export function buildCodexExecArgs(request) {
     // The prompt itself is piped through stdin (see execute): Windows cmd.exe
     // shims reject command lines longer than 8191 characters.
@@ -101,9 +148,24 @@ export class CodexRuntime {
         return { success: true, message: 'Codex login opened in a visible terminal.' };
     }
     async discoverModels() {
+        let raw = '';
+        try {
+            raw = await readFile(path.join(codexHome(), 'models_cache.json'), 'utf8');
+        }
+        catch {
+            // No cache yet: Codex writes it after its first run.
+        }
+        const entries = parseCodexModelsCache(raw);
         return {
-            models: [],
-            message: 'Codex CLI does not expose a safe account-filtered model list; Auto uses the signed-in account default.',
+            models: entries.map((entry) => entry.id),
+            labels: Object.fromEntries(entries.map((entry) => [entry.id, entry.label])),
+            allowCustom: true,
+            autoUsesDefault: true,
+            ...(entries.length === 0
+                ? {
+                    message: 'Codex has not cached its model list yet (run `codex` once); enter a model id manually or use Auto.',
+                }
+                : {}),
         };
     }
     async launch(options) {

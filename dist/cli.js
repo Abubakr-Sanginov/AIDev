@@ -13,14 +13,18 @@ import { createApprover } from './approval.js';
 import { validateProjectRoot } from './project-context.js';
 import { formatDuration, panel, renderBanner, renderDashboard, resolveTheme, statusBadge, THEME_NAMES, truncateVisible, } from './ui/ascii.js';
 import { renderActivityView, renderAgentView, renderGoalView, renderHelpView, } from './ui/inspect.js';
+import { renderRunSummary } from './ui/chat.js';
+import { ChatView } from './ui/chat-view.js';
 import { INITIAL_UI_STATE, parseTerminalInput, reduceUiEvent, } from './ui/interactive.js';
 import { BROWSER_MODES, loadConfig, resetConfig, setConfigValue, } from './config.js';
 import { runBrowserCheck } from './browser/check.js';
+import { PauseGate } from './pause.js';
+import { freezeProcesses, killFrozenProcessesSync, killRunningProcesses, thawProcesses } from './runtimes/suspend.js';
 import { appendRunRecord, listRunRecords } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
 import { providerPresets } from './providers/catalog.js';
-import { addCustom, addPreset, listProviders, providersView, removeProvider, setKey, testProvider, } from './providers/store.js';
+import { addCustom, addPreset, listProviders, providersView, removeProvider, setKey, updateProvider, clearKey, getProvider, testProvider, } from './providers/store.js';
 const { version: VERSION } = createRequire(import.meta.url)('../package.json');
 const program = new Command();
 program
@@ -147,6 +151,7 @@ async function resolveRuntimeId(value, root) {
         throw new Error('Choose a runtime with --runtime claude, opencode, or codex.');
     const stored = root === undefined ? [] : await listProviders(root);
     const addId = '__add-provider__';
+    const editId = '__edit-provider__';
     const selected = await choose('Choose a provider:', [
         { id: 'claude', name: 'Claude Code' },
         { id: 'opencode', name: 'OpenCode' },
@@ -156,7 +161,15 @@ async function resolveRuntimeId(value, root) {
             name: `${provider.name} (API key, ${provider.protocol})`,
         })),
         { id: addId, name: 'Добавить провайдера (по API-ключу)…' },
+        ...(stored.length === 0
+            ? []
+            : [{ id: editId, name: 'Изменить провайдера (ключ, модели, URL)…' }]),
     ]);
+    if (selected === editId && root !== undefined) {
+        const id = await choose('Which provider?', stored.map((provider) => ({ id: provider.id, name: provider.name })));
+        await providerEditFlow(root, id, {});
+        return id;
+    }
     if (selected === addId) {
         if (root === undefined)
             throw new Error('Project directory is required to add a provider.');
@@ -167,7 +180,7 @@ async function resolveRuntimeId(value, root) {
 async function resolveModel(runtime, root, requested) {
     const discovery = await runtime.discoverModels(root);
     if (requested) {
-        if (!discovery.models.includes(requested))
+        if (!discovery.allowCustom && !discovery.models.includes(requested))
             throw new Error(`Model '${requested}' was not reported as available by ${runtime.name}.`);
         return { model: requested };
     }
@@ -177,18 +190,28 @@ async function resolveModel(runtime, root, requested) {
     const candidates = autoModelCandidates(discovery);
     if (!process.stdin.isTTY)
         return candidates.length === 0 ? {} : { models: candidates };
+    const customId = '__custom-model__';
     const selected = await choose('Choose a model:', [
         {
             id: 'auto',
-            name: candidates.length === 0
-                ? 'Auto (provider chooses and may switch models)'
-                : `Auto (${candidates.length} models across all providers, free first)`,
+            name: discovery.autoUsesDefault
+                ? `Auto (${runtime.name} account default)`
+                : candidates.length === 0
+                    ? 'Auto (provider chooses and may switch models)'
+                    : `Auto (${candidates.length} models across all providers, free first)`,
         },
         ...discovery.models.map((model) => ({
             id: model,
             name: modelChoiceLabel(model, discovery),
         })),
+        ...(discovery.allowCustom ? [{ id: customId, name: 'Другая модель (ввести ID)…' }] : []),
     ]);
+    if (selected === customId) {
+        const typed = (await prompt('Model id: ')).trim();
+        if (typed === '')
+            throw new Error('Model id cannot be empty.');
+        return { model: typed };
+    }
     if (selected !== 'auto')
         return { model: selected };
     return candidates.length === 0 ? {} : { models: candidates };
@@ -303,9 +326,43 @@ function finalFrame(state) {
     return `${renderBanner(theme, VERSION)}${dashboard}\n`;
 }
 let interactiveAttached = false;
+let pauseGate;
+let pauseOperations = Promise.resolve();
+// `з` is the same physical key as `p` on the Russian layout.
+const PAUSE_KEYS = new Set(['p', 'P', 'з', 'З']);
+/**
+ * Pause stops new model requests, stages and tool calls at once and freezes
+ * running agent processes (Claude Code, Codex, OpenCode, commands); resume
+ * thaws them first, then lets the workflow continue.
+ */
+function togglePause() {
+    const gate = pauseGate;
+    if (gate === undefined)
+        return;
+    pauseOperations = pauseOperations
+        .then(async () => {
+        if (gate.requested) {
+            await thawProcesses();
+            gate.resume();
+            return;
+        }
+        gate.pause();
+        const frozenRoots = await freezeProcesses();
+        gate.markFrozen(frozenRoots > 0);
+    })
+        .catch(() => {
+        // Freezing failed (e.g. no PowerShell): the pause still applies at the
+        // next stage, request or tool call boundary.
+    });
+}
+process.on('exit', killFrozenProcessesSync);
 function handleTerminalInput(chunk) {
     let changed = false;
     for (const event of parseTerminalInput(chunk)) {
+        if (event.type === 'key' && PAUSE_KEYS.has(event.key)) {
+            togglePause();
+            continue;
+        }
         const next = reduceUiEvent(uiState, event, Math.max(1, process.stdout.rows - 4));
         if (next !== uiState) {
             uiState.view = next.view;
@@ -375,10 +432,12 @@ function stopLive() {
     process.stdout.write('\x1B[?25h\x1B[?1049l');
 }
 process.on('exit', stopLive);
-async function ensureRuntime(runtimeId, approval, root) {
+async function ensureRuntime(runtimeId, approval, root, approve) {
     const registry = await createDefaultRegistry({
         ...(root === undefined ? {} : { root }),
-        approve: (command) => withInteractiveSuspended(() => createApprover(approval)(command)),
+        approve: (command) => approve
+            ? approve(command)
+            : withInteractiveSuspended(() => createApprover(approval)(command)),
     });
     const runtime = registry.get(runtimeId);
     let detection = await runtime.detect();
@@ -459,9 +518,11 @@ async function run(goal) {
         lastPersistedStatus = state.status;
         await store.save(state);
     };
+    pauseGate = new PauseGate();
     const orchestrator = new RuntimeOrchestrator({
         root: config.root,
         runtime,
+        pauseGate,
         ...(selection.model === undefined ? {} : { model: selection.model }),
         ...(selection.models === undefined ? {} : { models: selection.models }),
         visibleRuntime: config.runtimeTerminal && runtime.id !== 'mock',
@@ -486,6 +547,7 @@ async function run(goal) {
         state = await orchestrator.run(task);
     }
     finally {
+        pauseGate = undefined;
         stopLive();
     }
     // Leave one final frame in the normal buffer as the persistent run record.
@@ -493,9 +555,195 @@ async function run(goal) {
     await recordHistory(config.root, task, state, selection.model);
     process.exitCode = state.status === 'DONE' ? 0 : 1;
 }
+function modelSelectionLabel(selection) {
+    if (selection.model !== undefined)
+        return selection.model;
+    if (selection.models !== undefined && selection.models.length > 0)
+        return `Auto (${selection.models.length} models, free first)`;
+    return 'Auto (provider default)';
+}
+/** Hard interrupt for the chat UI: cancel the gate and kill agent processes. */
+function interruptChatRun() {
+    pauseGate?.cancel();
+    try {
+        killRunningProcesses();
+    }
+    catch {
+        // Killing is best-effort: the cancelled gate unwinds the workflow anyway.
+    }
+}
+/**
+ * The Claude Code-style interactive session: `ai-dev-team` with no task opens
+ * a chat where each submitted task runs the full team workflow — Manager,
+ * Architect, developers, Tester, Reviewer — and every role's answer is
+ * printed under its name while the work happens.
+ */
+async function runChat() {
+    const config = options();
+    const saved = await loadConfig(config.root).catch(() => ({}));
+    sessionTheme = resolveTheme(config.theme ?? saved.theme);
+    const approval = program.getOptionValueSource('approval') === 'cli'
+        ? config.approval
+        : (saved.approval ?? config.approval);
+    await validateProjectRoot(config.root);
+    const runtimeId = await resolveRuntimeId(config.runtimeId ?? saved.runtime, config.root);
+    const view = new ChatView({
+        theme: sessionTheme,
+        approvalMode: approval,
+        onSubmit: (task) => executeChatRun(task),
+        onInterrupt: interruptChatRun,
+        onPauseToggle: togglePause,
+    });
+    const runtime = await ensureRuntime(runtimeId, approval, config.root, (command) => view.suspendFor(() => createApprover(approval)(command)));
+    let selection = await resolveModel(runtime, config.root, config.model ?? saved.model);
+    const browserMode = program.getOptionValueSource('browser') === 'cli'
+        ? config.browser
+        : (saved.browser ?? config.browser);
+    const headed = browserMode === 'headed' ||
+        (browserMode === 'auto' && process.stdout.isTTY && process.env.CI === undefined);
+    view.setCommandHandler(handleChatCommand);
+    let lastState;
+    async function executeChatRun(task) {
+        const store = new StateStore(config.root);
+        pauseGate = new PauseGate();
+        const orchestrator = new RuntimeOrchestrator({
+            root: config.root,
+            runtime,
+            pauseGate,
+            ...(selection.model === undefined ? {} : { model: selection.model }),
+            ...(selection.models === undefined ? {} : { models: selection.models }),
+            visibleRuntime: config.runtimeTerminal && runtime.id !== 'mock',
+            maxAgentAttempts: config.maxAgentAttempts,
+            retryBackoffMs: config.retryBackoffMs,
+            maxFixAttempts: config.maxFixAttempts,
+            ...(browserMode === 'off' || runtime.id === 'mock'
+                ? {}
+                : {
+                    browserCheck: (onActivity) => runBrowserCheck({ root: config.root, headed, onActivity }),
+                }),
+            onState: (state) => {
+                view.onWorkflowState(state);
+                if (state.status !== 'RUNNING')
+                    void store.save(state).catch(() => undefined);
+            },
+            onStateError: () => undefined,
+        });
+        try {
+            const state = await orchestrator.run(task);
+            lastState = state;
+            await recordHistory(config.root, task, state, selection.model);
+            return state;
+        }
+        finally {
+            pauseGate = undefined;
+        }
+    }
+    async function handleChatCommand(input) {
+        const theme = currentTheme();
+        const [name = '', ...rest] = input.slice(1).trim().split(/\s+/u);
+        const argument = rest.join(' ').trim();
+        switch (name.toLowerCase()) {
+            case 'help':
+                view.printLines([
+                    panel('Commands', [
+                        ' /help              this list',
+                        ' /agents            the team roles',
+                        ' /status            summary of the last run',
+                        ' /history           recent runs for this project',
+                        ' /model             pick another model for the next tasks',
+                        ` /theme <name>      color theme: ${THEME_NAMES.join(', ')}`,
+                        ' /clear             clear the screen',
+                        ' /exit              leave the chat',
+                    ], theme),
+                ]);
+                return;
+            case 'agents':
+                view.printLines([
+                    panel('Agents', roles.map((role) => ` ▸ ${role.name.padEnd(19)} ${role.description}`), theme),
+                ]);
+                return;
+            case 'status':
+                view.printLines([
+                    lastState === undefined
+                        ? theme.muted('No runs yet in this session. Describe a task to start one.')
+                        : renderRunSummary(theme, lastState, Date.now()),
+                ]);
+                return;
+            case 'history': {
+                const records = await listRunRecords(config.root);
+                if (records.length === 0) {
+                    view.printLines([theme.muted('No runs recorded yet.')]);
+                    return;
+                }
+                const lines = records.map((record) => {
+                    const when = record.finishedAt.slice(0, 19).replace('T', ' ');
+                    const duration = record.durationMs === undefined ? '-' : formatDuration(record.durationMs);
+                    const goal = record.goal.length > 48 ? `${record.goal.slice(0, 47)}…` : record.goal;
+                    return `${statusBadge(record.status, theme)} ${when}  ${duration.padEnd(8)} ${record.runtimeId.padEnd(10)} ${goal}`;
+                });
+                view.printLines([panel('Run history', lines, theme)]);
+                return;
+            }
+            case 'model': {
+                const next = await view.suspendFor(() => resolveModel(runtime, config.root, undefined));
+                selection = next;
+                view.printLines([`${theme.success('✔')} Model: ${modelSelectionLabel(next)}`]);
+                return;
+            }
+            case 'theme':
+                if (argument === '') {
+                    view.printLines([theme.muted(`Usage: /theme <${THEME_NAMES.join('|')}>`)]);
+                    return;
+                }
+                try {
+                    sessionTheme = resolveTheme(argument);
+                    view.setTheme(sessionTheme);
+                    view.printLines([`${theme.success('✔')} Theme: ${argument}`]);
+                }
+                catch (error) {
+                    view.printError(error);
+                }
+                return;
+            case 'clear':
+                view.clearScreen();
+                return;
+            case 'exit':
+            case 'quit':
+            case 'q':
+                view.exit();
+                return;
+            default:
+                view.printLines([theme.failure(`Unknown command '${input}'. Type /help.`)]);
+        }
+    }
+    view.start({
+        version: VERSION,
+        runtimeName: runtime.name,
+        modelLabel: modelSelectionLabel(selection),
+        root: config.root,
+    });
+    try {
+        await view.loop();
+    }
+    finally {
+        view.stop();
+    }
+    // An interrupt killed the agents but the orchestrator promise is still
+    // pending; exiting here drops it deliberately.
+    if (view.busy)
+        process.exit(0);
+}
 program
     .argument('[task...]', 'development task')
-    .action(async (task) => run(task.join(' ')));
+    .action(async (task) => {
+    // A bare `ai-dev-team` opens the interactive chat (like Claude Code);
+    // a task on the command line runs the one-shot workflow instead.
+    if (task.length === 0 && process.stdout.isTTY) {
+        await runChat();
+        return;
+    }
+    await run(task.join(' '));
+});
 program
     .command('init')
     .description('Initialize project state.')
@@ -589,6 +837,108 @@ async function providerAddFlow(root, flags) {
     process.stdout.write(`[ DONE ] Added provider '${provider.id}' (${provider.protocol}).\n`);
     return provider.id;
 }
+function splitModels(value) {
+    return value
+        .split(',')
+        .map((model) => model.trim())
+        .filter((model) => model !== '');
+}
+// Flags edit non-interactively; with no flags a menu edits one field at a time.
+async function providerEditFlow(root, id, flags) {
+    const provider = await getProvider(root, id);
+    if (!provider)
+        throw new Error(`Unknown provider '${id}'. See: ai-dev-team providers list`);
+    const flagged = Object.values(flags).some((value) => value !== undefined && value !== false);
+    if (flagged) {
+        let models = flags.models === undefined ? undefined : splitModels(flags.models);
+        if (flags.addModel !== undefined)
+            models = [...(models ?? provider.models), ...splitModels(flags.addModel)];
+        if (flags.removeModel !== undefined) {
+            const drop = new Set(splitModels(flags.removeModel));
+            models = (models ?? provider.models).filter((model) => !drop.has(model));
+        }
+        const patch = {
+            ...(flags.name === undefined ? {} : { name: flags.name }),
+            ...(flags.protocol === undefined ? {} : { protocol: flags.protocol }),
+            ...(flags.baseUrl === undefined ? {} : { baseUrl: flags.baseUrl }),
+            ...(models === undefined ? {} : { models }),
+            ...(flags.clearApiKeyEnv
+                ? { apiKeyEnv: null }
+                : flags.apiKeyEnv === undefined
+                    ? {}
+                    : { apiKeyEnv: flags.apiKeyEnv }),
+        };
+        if (Object.keys(patch).length > 0)
+            await updateProvider(root, id, patch);
+        if (flags.clearKey)
+            await clearKey(root, id);
+        if (flags.key !== undefined)
+            await setKey(root, id, flags.key);
+        process.stdout.write(`[ DONE ] Updated provider '${id}'.\n`);
+        return;
+    }
+    for (;;) {
+        const view = (await providersView(root)).find((candidate) => candidate.id === id);
+        if (!view)
+            throw new Error(`Unknown provider '${id}'.`);
+        const key = view.keySource === 'missing'
+            ? 'not set'
+            : `${view.maskedKey ?? ''} (${view.keySource === 'env' ? `from ${view.apiKeyEnv ?? 'env'}` : 'stored'})`;
+        const field = await choose(`Edit provider '${id}':`, [
+            { id: 'key', name: `API key: ${key}` },
+            { id: 'models', name: `Models: ${view.models.join(', ')}` },
+            { id: 'baseUrl', name: `Base URL: ${view.baseUrl}` },
+            { id: 'name', name: `Name: ${view.name}` },
+            { id: 'protocol', name: `Protocol: ${view.protocol}` },
+            { id: 'env', name: `Key environment variable: ${view.apiKeyEnv ?? 'none'}` },
+            { id: 'test', name: 'Test the connection' },
+            { id: 'done', name: 'Done' },
+        ]);
+        if (field === 'done')
+            return;
+        if (field === 'test') {
+            const result = await testProvider(root, id);
+            process.stdout.write(`${result.ok ? '[ OK ]' : '[FAIL]'} ${result.message}\n`);
+            continue;
+        }
+        if (field === 'key') {
+            const value = await promptSecret('New API key (hidden; empty keeps it, "-" deletes it): ');
+            if (value === '-')
+                await clearKey(root, id);
+            else if (value !== '')
+                await setKey(root, id, value);
+            continue;
+        }
+        if (field === 'protocol') {
+            await updateProvider(root, id, {
+                protocol: await choose('Protocol:', [
+                    { id: 'openai', name: 'OpenAI-compatible Chat Completions' },
+                    { id: 'anthropic', name: 'Anthropic Messages API' },
+                ]),
+            });
+            continue;
+        }
+        const current = field === 'models'
+            ? view.models.join(', ')
+            : field === 'baseUrl'
+                ? view.baseUrl
+                : field === 'name'
+                    ? view.name
+                    : (view.apiKeyEnv ?? '');
+        const hint = field === 'env' ? 'empty keeps it, "-" removes it' : 'empty keeps it';
+        const value = (await prompt(`New value (current: ${current}; ${hint}): `)).trim();
+        if (value === '')
+            continue;
+        if (field === 'models')
+            await updateProvider(root, id, { models: splitModels(value) });
+        else if (field === 'baseUrl')
+            await updateProvider(root, id, { baseUrl: value });
+        else if (field === 'name')
+            await updateProvider(root, id, { name: value });
+        else
+            await updateProvider(root, id, { apiKeyEnv: value === '-' ? null : value });
+    }
+}
 async function listProvidersAction() {
     const views = await providersView(options().root);
     if (views.length === 0) {
@@ -604,7 +954,10 @@ async function listProvidersAction() {
     });
     const header = ['id', 'name', 'protocol', 'baseUrl', 'key'];
     const widths = header.map((column, index) => Math.max(column.length, ...rows.map((row) => row[index]?.length ?? 0)));
-    const line = (columns) => columns.map((column, index) => column.padEnd(widths[index] ?? 0)).join('  ').trimEnd();
+    const line = (columns) => columns
+        .map((column, index) => column.padEnd(widths[index] ?? 0))
+        .join('  ')
+        .trimEnd();
     process.stdout.write(`${line(header)}\n${line(widths.map((width) => '-'.repeat(width)))}\n`);
     for (const row of rows)
         process.stdout.write(`${line(row)}\n`);
@@ -649,6 +1002,22 @@ providers
         throw new Error('API key cannot be empty.');
     await setKey(options().root, id, key);
     process.stdout.write(`[ DONE ] Stored key for '${id}'.\n`);
+});
+providers
+    .command('edit <id>')
+    .description('Change a provider: key, models, URL, name, protocol (menu when run without flags).')
+    .option('--key <key>', 'replace the stored API key')
+    .option('--clear-key', 'delete the stored API key')
+    .option('--models <list>', 'replace the model list (comma-separated)')
+    .option('--add-model <list>', 'add models (comma-separated)')
+    .option('--remove-model <list>', 'remove models (comma-separated)')
+    .option('--base-url <url>', 'new API base URL')
+    .option('--name <name>', 'new display name')
+    .option('--protocol <protocol>', 'openai or anthropic')
+    .option('--api-key-env <var>', 'read the key from this environment variable')
+    .option('--clear-api-key-env', 'stop reading the key from an environment variable')
+    .action(async (id, flags) => {
+    await providerEditFlow(options().root, id, flags);
 });
 providers
     .command('test <id>')

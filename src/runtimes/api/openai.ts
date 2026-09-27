@@ -51,30 +51,37 @@ function isTimeout(error: unknown): boolean {
  * whole stage retry, which would resend the entire conversation. Only thrown
  * fetch errors retry; HTTP error statuses are returned to the caller.
  */
-export async function postJson(
-  options: {
-    fetchImpl: typeof fetch;
-    url: string;
-    headers: Record<string, string>;
-    body: string;
-    delaysMs?: readonly number[];
-    timeoutMs?: number;
-  },
-): Promise<Response> {
+export async function postJson(options: {
+  fetchImpl: typeof fetch;
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+  delaysMs?: readonly number[];
+  timeoutMs?: number;
+  /** Hard-interrupt signal: when aborted, the request fails immediately and is never retried. */
+  signal?: AbortSignal;
+}): Promise<Response> {
   const delays = options.delaysMs ?? TRANSPORT_DELAYS_MS;
   const timeoutMs = options.timeoutMs ?? requestTimeoutMs();
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal =
+    options.signal === undefined ? timeoutSignal : AbortSignal.any([timeoutSignal, options.signal]);
   let lastError: unknown;
   for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-    if (attempt > 0)
-      await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1] ?? 0));
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, delays[attempt - 1] ?? 0));
     try {
       return await options.fetchImpl(options.url, {
         method: 'POST',
         headers: options.headers,
         body: options.body,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal,
       });
     } catch (error) {
+      // A user interrupt must surface as-is, not as a retriable transport error.
+      if (options.signal?.aborted)
+        throw options.signal.reason instanceof Error
+          ? options.signal.reason
+          : new Error('Request aborted.');
       // A timeout already spent the whole budget; retrying in-place would only
       // stall the stage further, so it surfaces to the stage-level retry.
       if (isTimeout(error))
@@ -90,6 +97,31 @@ export async function postJson(
   });
 }
 
+/** Input and output token counts as reported by a provider response. */
+export interface ProviderTokenUsage {
+  input: number;
+  output: number;
+}
+
+export function parseOpenAiUsage(payload: Record<string, unknown>): ProviderTokenUsage | undefined {
+  const usage = payload.usage;
+  if (!isRecord(usage)) return undefined;
+  const input = usage.prompt_tokens;
+  const output = usage.completion_tokens;
+  if (typeof input !== 'number' || typeof output !== 'number') return undefined;
+  return { input, output };
+}
+
+export function parseAnthropicUsage(
+  payload: Record<string, unknown>,
+): ProviderTokenUsage | undefined {
+  const usage = payload.usage;
+  if (!isRecord(usage)) return undefined;
+  const input = usage.input_tokens;
+  const output = usage.output_tokens;
+  if (typeof input !== 'number' || typeof output !== 'number') return undefined;
+  return { input, output };
+}
 
 function parseToolCalls(message: Record<string, unknown>): NormalizedToolCall[] {
   const raw = message.tool_calls;
@@ -124,7 +156,12 @@ export async function callOpenAiChat(options: {
   fetchImpl?: typeof fetch;
   transportDelaysMs?: readonly number[];
   timeoutMs?: number;
-}): Promise<{ reply: NormalizedReply; assistantMessage: OpenAiMessage }> {
+  signal?: AbortSignal;
+}): Promise<{
+  reply: NormalizedReply;
+  assistantMessage: OpenAiMessage;
+  tokens?: ProviderTokenUsage;
+}> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const body: Record<string, unknown> = {
     model: options.model,
@@ -144,9 +181,9 @@ export async function callOpenAiChat(options: {
     body: JSON.stringify(body),
     ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (!response.ok)
-    throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
   const payload: unknown = await response.json();
   if (!isRecord(payload) || !Array.isArray(payload.choices))
     throw new Error('OpenAI-compatible provider returned an unexpected payload.');
@@ -158,5 +195,9 @@ export async function callOpenAiChat(options: {
   return {
     reply: { text, toolCalls: parseToolCalls(message) },
     assistantMessage: message,
+    ...(() => {
+      const tokens = parseOpenAiUsage(payload);
+      return tokens === undefined ? {} : { tokens };
+    })(),
   };
 }

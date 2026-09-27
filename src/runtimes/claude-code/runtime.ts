@@ -9,11 +9,20 @@ import type {
   InstallResult,
   LaunchOptions,
   RuntimeDetection,
+  RuntimeModelDiscovery,
   RuntimeResult,
   RuntimeSession,
   RuntimeState,
 } from '../runtime.js';
 import { runProcess, type ProcessRunner } from '../process.js';
+
+/** Aliases `claude --model` resolves to the newest model of each family. */
+export const CLAUDE_MODEL_ALIASES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'fable', label: 'Fable: most capable, highest usage' },
+  { id: 'opus', label: 'Opus: strong coding and reasoning' },
+  { id: 'sonnet', label: 'Sonnet: balanced speed and quality' },
+  { id: 'haiku', label: 'Haiku: fastest, lowest usage' },
+];
 import { buildLogFollowerOptions } from '../../terminal/log-follower.js';
 import type { TerminalLauncher } from '../../terminal/terminal.js';
 
@@ -94,11 +103,14 @@ export class ClaudeCodeRuntime implements CodingRuntime {
       message: 'Claude Code opened. Complete authentication in its terminal.',
     };
   }
-  async discoverModels(): Promise<{ models: string[]; message?: string }> {
+  async discoverModels(): Promise<RuntimeModelDiscovery> {
+    // Aliases always point at the latest model of each family, so this list
+    // never goes stale; full model names are accepted too (allowCustom).
     return {
-      models: [],
-      message:
-        'Claude Code does not expose a safe account-filtered model list; Auto uses the account default and provider fallback.',
+      models: CLAUDE_MODEL_ALIASES.map((entry) => entry.id),
+      labels: Object.fromEntries(CLAUDE_MODEL_ALIASES.map((entry) => [entry.id, entry.label])),
+      allowCustom: true,
+      autoUsesDefault: true,
     };
   }
   async launch(options: LaunchOptions): Promise<RuntimeSession> {

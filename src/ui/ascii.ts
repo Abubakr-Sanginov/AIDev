@@ -12,6 +12,7 @@ export interface Theme {
   success: (text: string) => string;
   failure: (text: string) => string;
   muted: (text: string) => string;
+  bold: (text: string) => string;
   banner: Array<(text: string) => string>;
 }
 
@@ -25,6 +26,7 @@ const MONO_THEME: Theme = {
   success: identity,
   failure: identity,
   muted: identity,
+  bold: identity,
   banner: [identity, identity, identity, identity, identity, identity],
 };
 
@@ -37,6 +39,7 @@ const THEMES: Record<Exclude<ThemeName, 'mono'>, Theme> = {
     success: chalk.green,
     failure: chalk.red,
     muted: chalk.gray,
+    bold: chalk.bold,
     banner: [
       chalk.cyanBright,
       chalk.cyan,
@@ -54,6 +57,7 @@ const THEMES: Record<Exclude<ThemeName, 'mono'>, Theme> = {
     success: chalk.greenBright,
     failure: chalk.redBright,
     muted: chalk.gray,
+    bold: chalk.bold,
     banner: [
       chalk.blue,
       chalk.blueBright,
@@ -71,6 +75,7 @@ const THEMES: Record<Exclude<ThemeName, 'mono'>, Theme> = {
     success: chalk.greenBright,
     failure: chalk.red,
     muted: chalk.gray,
+    bold: chalk.bold,
     banner: [
       chalk.green,
       chalk.greenBright,
@@ -177,7 +182,13 @@ export function statusBadge(status: string, theme: Theme): string {
   const text = `[ ${status} ]`;
   if (status === 'DONE') return theme.success(text);
   if (status === 'FAILED' || status === 'CANCELLED') return theme.failure(text);
-  if (status === 'RUNNING' || status === 'ACTIVE' || status === 'RETRYING')
+  if (
+    status === 'RUNNING' ||
+    status === 'ACTIVE' ||
+    status === 'RETRYING' ||
+    status === 'PAUSED' ||
+    status === 'PAUSING'
+  )
     return theme.accent(text);
   return theme.muted(text);
 }
@@ -240,6 +251,12 @@ export interface DashboardOptions {
   offsetY?: number;
 }
 
+/** Time spent paused by the user: finished pauses plus the one in progress. */
+export function pausedDurationMs(state: RuntimeWorkflowState, now: number): number {
+  const current = state.pausedAt === undefined ? 0 : Math.max(0, now - Date.parse(state.pausedAt));
+  return (state.pausedMs ?? 0) + (Number.isNaN(current) ? 0 : current);
+}
+
 export function renderDashboard(
   state: RuntimeWorkflowState,
   root: string,
@@ -252,9 +269,10 @@ export function renderDashboard(
   const startedMs = state.startedAt ? Date.parse(state.startedAt) : Number.NaN;
   const finishedMs =
     state.status === 'RUNNING' || !state.updatedAt ? now : Date.parse(state.updatedAt);
-  const elapsedMs = Number.isNaN(startedMs) ? 0 : Math.max(0, finishedMs - startedMs);
+  const elapsedMs = Number.isNaN(startedMs)
+    ? 0
+    : Math.max(0, finishedMs - startedMs - pausedDurationMs(state, finishedMs));
   const eta = estimateEtaMs(completed, total, elapsedMs);
-
 
   const latest = new Map(state.events.map((event) => [event.roleId, event.status]));
   const visibleEvents = state.events.filter(
@@ -263,7 +281,14 @@ export function renderDashboard(
   const event = [...visibleEvents].reverse()[0];
   const retry = [...state.events].reverse().find((candidate) => candidate.status === 'RETRYING');
   const attempt = event?.attempt ? `${event.attempt}/${event.maxAttempts ?? event.attempt}` : '-';
-  const spinner = state.status === 'RUNNING' ? `${spinnerFrame(now)} ` : '';
+  const spinner =
+    state.status === 'RUNNING' && state.pause === undefined ? `${spinnerFrame(now)} ` : '';
+  const shownStatus =
+    state.status !== 'RUNNING' || state.pause === undefined
+      ? state.status
+      : state.pause === 'paused'
+        ? 'PAUSED'
+        : 'PAUSING';
   const lastEvent = state.events.at(-1);
   const lastEventMs =
     lastEvent?.timestamp === undefined ? Number.NaN : Date.parse(lastEvent.timestamp);
@@ -287,13 +312,15 @@ export function renderDashboard(
   const overview = panel(
     'Overview',
     [
-      `${spinner}${theme.secondary('Status:')} ${statusBadge(state.status, theme)}   ${theme.secondary('Elapsed:')} ${formatDuration(elapsedMs)}${eta === undefined ? '' : `   ${theme.secondary('ETA:')} ~${formatDuration(eta)}`}`,
+      `${spinner}${theme.secondary('Status:')} ${statusBadge(shownStatus, theme)}   ${theme.secondary('Elapsed:')} ${formatDuration(elapsedMs)}${eta === undefined ? '' : `   ${theme.secondary('ETA:')} ~${formatDuration(eta)}`}`,
       `${theme.accent(progressBar(completed, total))} ${theme.muted(`(${completed}/${total} phases)`)}`,
       `${theme.secondary('Goal:')}  ${state.goal.slice(0, 96)}`,
       `${theme.secondary('Path:')}  ${root}`,
       `${theme.secondary('Model:')} ${state.model ?? theme.muted('runtime default')}`,
       `${theme.secondary('Phase:')} ${state.currentRoleId ?? (state.status === 'RUNNING' ? 'waiting' : 'complete')}  ${theme.secondary('Attempt:')} ${attempt}`,
-      theme.muted('Clicks: this panel, Activity, agent rows · keys: g a h 1-8 · Esc closes'),
+      theme.muted(
+        'Clicks: this panel, Activity, agent rows · keys: g a h 1-8 · p pause · Esc closes',
+      ),
     ],
     theme,
     options.maxWidth,
@@ -308,11 +335,17 @@ export function renderDashboard(
     options.maxWidth,
   );
   const idleLabel =
-    idleMs === undefined
-      ? 'unknown'
-      : idleMs > 60_000
-        ? theme.accent(`${formatDuration(idleMs)} — model is still generating, no new events yet`)
-        : formatDuration(idleMs);
+    state.status === 'RUNNING' && state.pause === 'paused'
+      ? theme.accent('paused — press p to resume')
+      : state.status === 'RUNNING' && state.pause === 'pausing'
+        ? theme.accent('pausing — the current step finishes, then everything stops')
+        : idleMs === undefined
+          ? 'unknown'
+          : idleMs > 60_000
+            ? theme.accent(
+                `${formatDuration(idleMs)} — model is still generating, no new events yet`,
+              )
+            : formatDuration(idleMs);
   const recentActivity = [...visibleEvents].slice(-ACTIVITY_PANEL_ROWS);
   const activity = panel(
     'Activity',
@@ -335,10 +368,15 @@ export function renderDashboard(
   );
   const sections = [
     place('overview', overview),
-    place('agents', agents, roles.map((role) => `agent:${role.id}`)),
+    place(
+      'agents',
+      agents,
+      roles.map((role) => `agent:${role.id}`),
+    ),
     place('activity', activity),
   ];
-  if (state.status !== 'RUNNING') sections.push(place('summary', renderSummary(state, theme, options.maxWidth)));
+  if (state.status !== 'RUNNING')
+    sections.push(place('summary', renderSummary(state, theme, options.maxWidth)));
   return sections.join('\n');
 }
 
@@ -364,7 +402,7 @@ export function renderSummary(
   const finishedMs = state.updatedAt ? Date.parse(state.updatedAt) : Date.now();
   const duration = Number.isNaN(startedMs)
     ? 'unknown'
-    : formatDuration(Math.max(0, finishedMs - startedMs));
+    : formatDuration(Math.max(0, finishedMs - startedMs - pausedDurationMs(state, finishedMs)));
   const headline =
     state.status === 'DONE'
       ? theme.success('✔ Implementation, verification, and review completed.')

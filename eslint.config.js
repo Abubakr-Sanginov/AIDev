@@ -8,6 +8,7 @@ export default tseslint.config(
       'coverage',
       '.ai-team',
       '.ai-dev-team',
+      '.kilo',
       '.tmp',
       'tmp',
       'temp',

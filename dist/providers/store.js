@@ -257,6 +257,48 @@ export async function addCustom(root, definition, key) {
     await saveProvider(root, provider, key);
     return provider;
 }
+/**
+ * Changes an existing provider in place. The merged definition goes through
+ * the same validation as a new custom provider; the id and the stored key
+ * are kept (change the key with setKey).
+ */
+export async function updateProvider(root, id, patch) {
+    const file = await readProvidersFile(root);
+    const current = file.providers[id];
+    if (!current)
+        throw new Error(`Unknown provider '${id}'.`);
+    const next = {
+        name: (patch.name ?? current.name).trim(),
+        protocol: patch.protocol ?? current.protocol,
+        baseUrl: (patch.baseUrl ?? current.baseUrl).trim().replace(/\/+$/, ''),
+        models: (patch.models ?? current.models)
+            .map((model) => model.trim())
+            .filter((model) => model !== ''),
+    };
+    assertCustomDefinition(next);
+    const apiKeyEnv = patch.apiKeyEnv === undefined ? current.apiKeyEnv : patch.apiKeyEnv?.trim() || undefined;
+    const provider = {
+        id,
+        name: next.name,
+        protocol: next.protocol === 'anthropic' ? 'anthropic' : 'openai',
+        baseUrl: next.baseUrl,
+        models: [...new Set(next.models)],
+        ...(apiKeyEnv === undefined ? {} : { apiKeyEnv }),
+        ...(current.preset === undefined ? {} : { preset: current.preset }),
+    };
+    file.providers[id] = provider;
+    await writeProvidersFile(file);
+    return provider;
+}
+/** Forgets the stored key; an environment variable binding still applies. */
+export async function clearKey(root, id) {
+    await requireProvider(root, id);
+    const secrets = await readSecretsFile(root);
+    if (secrets.keys[id] === undefined)
+        return;
+    const remaining = Object.fromEntries(Object.entries(secrets.keys).filter(([key]) => key !== id));
+    await writeSecretsFile({ version: 1, keys: remaining });
+}
 export async function removeProvider(root, id) {
     const providers = await readProvidersFile(root);
     if (!providers.providers[id])

@@ -1,3 +1,4 @@
+import type { PauseGate } from '../pause.js';
 import type { CodingRuntime, RuntimeSession } from './runtime.js';
 import { type ProjectContext } from '../project-context.js';
 export type RuntimeWorkflowEventStatus = 'RUNNING' | 'ACTIVE' | 'RETRYING' | 'DONE' | 'FAILED' | 'SKIPPED' | 'CANCELLED';
@@ -21,10 +22,18 @@ export interface RuntimeWorkflowState {
     completedPhases?: number;
     totalPhases?: number;
     currentRoleId?: string;
+    /** Set while the user has paused the run (`pausing` until work actually stops). */
+    pause?: 'pausing' | 'paused';
+    /** When the current pause was requested; unset while running. */
+    pausedAt?: string;
+    /** Total length of finished pauses, excluded from the elapsed time. */
+    pausedMs?: number;
     /** Why a finished workflow is FAILED when no individual agent failed. */
     failureReason?: string;
     /** Model currently serving the workflow (Auto rotation keeps it current). */
     model?: string;
+    /** Cumulative prompt + completion tokens reported by API providers. */
+    tokensUsed?: number;
     projectContext?: ProjectContext;
 }
 export interface RuntimeWorkflowOptions {
@@ -51,6 +60,8 @@ export interface RuntimeWorkflowOptions {
      * `VERDICT: FAIL` line, so it routes to the fixer like any tester defect.
      */
     browserCheck?(onActivity: (message: string) => void): Promise<BrowserCheckOutcome | undefined>;
+    /** User pause switch: the workflow waits on it before every stage and request. */
+    pauseGate?: PauseGate;
 }
 export interface BrowserCheckOutcome {
     status: 'pass' | 'fail' | 'skipped';

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { buildLogFollowerOptions } from '../../terminal/log-follower.js';
 import type { TerminalLauncher } from '../../terminal/terminal.js';
@@ -12,6 +13,7 @@ import type {
   InstallResult,
   LaunchOptions,
   RuntimeDetection,
+  RuntimeModelDiscovery,
   RuntimeResult,
   RuntimeSession,
   RuntimeState,
@@ -22,6 +24,50 @@ interface CodexEvent {
   thread_id?: unknown;
   item?: { type?: unknown; text?: unknown };
   message?: unknown;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Reads the model list the Codex CLI caches for the signed-in account
+ * (`$CODEX_HOME/models_cache.json`), in the order Codex itself shows it:
+ * hidden entries dropped, lower `priority` first.
+ */
+export function parseCodexModelsCache(raw: string): Array<{ id: string; label: string }> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!isRecord(parsed) || !Array.isArray(parsed.models)) return [];
+  const entries: Array<{ id: string; label: string; priority: number }> = [];
+  for (const entry of parsed.models) {
+    if (!isRecord(entry) || typeof entry.slug !== 'string' || entry.slug === '') continue;
+    if (typeof entry.visibility === 'string' && entry.visibility !== 'list') continue;
+    const description = typeof entry.description === 'string' ? entry.description : '';
+    entries.push({
+      id: entry.slug,
+      label: description,
+      priority: typeof entry.priority === 'number' ? entry.priority : Number.MAX_SAFE_INTEGER,
+    });
+  }
+  entries.sort((a, b) => a.priority - b.priority);
+  const seen = new Set<string>();
+  return entries
+    .filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    })
+    .map(({ id, label }) => ({ id, label }));
+}
+
+export function codexHome(): string {
+  const override = process.env.CODEX_HOME?.trim();
+  return override ? path.resolve(override) : path.join(homedir(), '.codex');
 }
 
 export function buildCodexExecArgs(request: AgentRequest): string[] {
@@ -128,11 +174,25 @@ export class CodexRuntime implements CodingRuntime {
     return { success: true, message: 'Codex login opened in a visible terminal.' };
   }
 
-  async discoverModels(): Promise<{ models: string[]; message?: string }> {
+  async discoverModels(): Promise<RuntimeModelDiscovery> {
+    let raw = '';
+    try {
+      raw = await readFile(path.join(codexHome(), 'models_cache.json'), 'utf8');
+    } catch {
+      // No cache yet: Codex writes it after its first run.
+    }
+    const entries = parseCodexModelsCache(raw);
     return {
-      models: [],
-      message:
-        'Codex CLI does not expose a safe account-filtered model list; Auto uses the signed-in account default.',
+      models: entries.map((entry) => entry.id),
+      labels: Object.fromEntries(entries.map((entry) => [entry.id, entry.label])),
+      allowCustom: true,
+      autoUsesDefault: true,
+      ...(entries.length === 0
+        ? {
+            message:
+              'Codex has not cached its model list yet (run `codex` once); enter a model id manually or use Auto.',
+          }
+        : {}),
     };
   }
 

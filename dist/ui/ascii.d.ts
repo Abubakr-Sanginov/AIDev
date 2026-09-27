@@ -8,6 +8,7 @@ export interface Theme {
     success: (text: string) => string;
     failure: (text: string) => string;
     muted: (text: string) => string;
+    bold: (text: string) => string;
     banner: Array<(text: string) => string>;
 }
 export declare const THEME_NAMES: readonly ThemeName[];
@@ -43,5 +44,7 @@ export interface DashboardOptions {
     /** Screen lines already printed above the dashboard (banner height). */
     offsetY?: number;
 }
+/** Time spent paused by the user: finished pauses plus the one in progress. */
+export declare function pausedDurationMs(state: RuntimeWorkflowState, now: number): number;
 export declare function renderDashboard(state: RuntimeWorkflowState, root: string, theme: Theme, options?: DashboardOptions): string;
 export declare function renderSummary(state: RuntimeWorkflowState, theme: Theme, maxWidth?: number): string;

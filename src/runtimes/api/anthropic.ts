@@ -1,4 +1,4 @@
-import { postJson } from './openai.js';
+import { postJson, parseAnthropicUsage, type ProviderTokenUsage } from './openai.js';
 import type { NormalizedReply, NormalizedToolCall } from './tools.js';
 
 export type AnthropicMessage = Record<string, unknown>;
@@ -49,7 +49,12 @@ export async function callAnthropicMessages(options: {
   fetchImpl?: typeof fetch;
   transportDelaysMs?: readonly number[];
   timeoutMs?: number;
-}): Promise<{ reply: NormalizedReply; assistantContent: AnthropicContentBlock[] }> {
+  signal?: AbortSignal;
+}): Promise<{
+  reply: NormalizedReply;
+  assistantContent: AnthropicContentBlock[];
+  tokens?: ProviderTokenUsage;
+}> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const body: Record<string, unknown> = {
     model: options.model,
@@ -69,17 +74,19 @@ export async function callAnthropicMessages(options: {
     body: JSON.stringify(body),
     ...(options.transportDelaysMs === undefined ? {} : { delaysMs: options.transportDelaysMs }),
     ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
   });
-  if (!response.ok)
-    throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
+  if (!response.ok) throw new Error(`HTTP ${response.status}: ${await errorMessage(response)}`);
   const payload: unknown = await response.json();
   if (!isRecord(payload)) throw new Error('Anthropic provider returned an unexpected payload.');
   const parsed = parseContent(payload.content);
   const assistantContent: AnthropicContentBlock[] = Array.isArray(payload.content)
     ? payload.content.filter(isRecord)
     : [{ type: 'text', text: parsed.text }];
+  const tokens = parseAnthropicUsage(payload);
   return {
     reply: { text: parsed.text, toolCalls: parsed.toolCalls },
     assistantContent,
+    ...(tokens === undefined ? {} : { tokens }),
   };
 }

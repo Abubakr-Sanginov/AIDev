@@ -132,6 +132,42 @@ Global installs expose the compiled `dist/` output and do not include the `src/`
 
 After installation, run `ai-dev-team` from the project you want the agents to modify, or pass its path with `-C`.
 
+## Interactive chat
+
+Running `ai-dev-team` with no task opens a Claude Code-style chat instead of a one-shot run:
+
+```text
+$ ai-dev-team
+
+ AI Dev Team  v0.4.0
+ Claude Code · Auto (3 models, free first)
+ C:\Projects\my-app
+
+❯ build a snake game with high scores
+
+● Manager
+  Plan: canvas game loop, score store, keyboard controls…
+  ✓ 41s
+● Backend Developer
+  Implemented the score module and the game state machine…
+  ✓ 2m 10s · 4 tool calls
+✔ Task complete (9m 4s · ↑ 54.8k tokens)
+
+❯ _
+```
+
+Each submitted task runs the full team workflow, and every role's answer is printed under its name (`● Manager`, `● Architect`, `● Backend Developer`, `● Tester`, `● Reviewer`). While the team works you can keep typing: the next task is queued and starts automatically when the current run finishes.
+
+Keys and commands:
+
+- `Esc` — interrupt the current run (agent processes are stopped, the run ends)
+- `ctrl+p` — pause / resume the current run
+- `ctrl+c` — clear the input line; press again to leave the chat
+- `↑` / `↓` — recall previous tasks
+- `/help`, `/agents`, `/status`, `/history`, `/model`, `/theme <name>`, `/clear`, `/exit` — chat commands
+
+Passing a task on the command line (`ai-dev-team "build X"`) keeps the one-shot dashboard behavior; `ai-dev-team run`, `resume`, and `status` work as before.
+
 ## Publishing
 
 Releases are published to the npm registry from a local checkout:

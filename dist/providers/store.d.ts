@@ -40,6 +40,23 @@ export declare function addCustom(root: string, definition: {
     models: string[];
     apiKeyEnv?: string;
 }, key?: string): Promise<StoredProvider>;
+export interface ProviderPatch {
+    name?: string;
+    protocol?: string;
+    baseUrl?: string;
+    /** Replaces the whole model list. */
+    models?: string[];
+    /** A variable name, or null to stop reading the key from the environment. */
+    apiKeyEnv?: string | null;
+}
+/**
+ * Changes an existing provider in place. The merged definition goes through
+ * the same validation as a new custom provider; the id and the stored key
+ * are kept (change the key with setKey).
+ */
+export declare function updateProvider(root: string, id: string, patch: ProviderPatch): Promise<StoredProvider>;
+/** Forgets the stored key; an environment variable binding still applies. */
+export declare function clearKey(root: string, id: string): Promise<void>;
 export declare function removeProvider(root: string, id: string): Promise<void>;
 export declare function setKey(root: string, id: string, key: string): Promise<void>;
 export declare function resolveKey(root: string, id: string): Promise<KeyResolution>;

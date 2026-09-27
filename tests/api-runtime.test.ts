@@ -23,9 +23,10 @@ afterEach(async () => {
 
 type FetchCall = { url: string; body: Record<string, unknown>; headers: Record<string, string> };
 
-function fakeFetch(
-  responses: { status?: number; payload: unknown }[],
-): { fetchImpl: typeof fetch; calls: FetchCall[] } {
+function fakeFetch(responses: { status?: number; payload: unknown }[]): {
+  fetchImpl: typeof fetch;
+  calls: FetchCall[];
+} {
   const calls: FetchCall[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const next = responses.shift();
@@ -95,7 +96,9 @@ describe('ApiProviderRuntime — OpenAI protocol', () => {
           ],
         },
       },
-      { payload: { choices: [{ message: { role: 'assistant', content: 'The note says hello.' } }] } },
+      {
+        payload: { choices: [{ message: { role: 'assistant', content: 'The note says hello.' } }] },
+      },
     ]);
     const runtime = new ApiProviderRuntime(stored, { root, fetchImpl });
     const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
@@ -376,6 +379,46 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
     expect(isProviderDiagnostic(message)).toBe(true);
   });
 
+  it('waits on the pause hook before every model request and tool call', async () => {
+    const root = await tempRoot();
+    const stored = await setupProvider(root, 'openai');
+    const order: string[] = [];
+    let calls = 0;
+    const fetchImpl = (async () => {
+      order.push('request');
+      calls += 1;
+      const message =
+        calls === 1
+          ? {
+              role: 'assistant',
+              content: '',
+              tool_calls: [
+                {
+                  id: 'c1',
+                  type: 'function',
+                  function: { name: 'list_files', arguments: '{}' },
+                },
+              ],
+            }
+          : { role: 'assistant', content: 'Done.' };
+      return new Response(JSON.stringify({ choices: [{ message }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const runtime = new ApiProviderRuntime(stored, { root, fetchImpl });
+    const session = await runtime.launch({ workingDirectory: root, roleId: 'coder' });
+    const result = await runtime.execute(session, {
+      prompt: 'hi',
+      waitIfPaused: async () => {
+        order.push('wait');
+      },
+    });
+    expect(result.success).toBe(true);
+    // wait → request (tool call) → wait before the tool → wait → request (final)
+    expect(order).toEqual(['wait', 'request', 'wait', 'wait', 'request']);
+  });
+
   it('fails the stage when the provider accepts the request but never answers', async () => {
     const root = await tempRoot();
     const stored = await setupProvider(root, 'openai');
@@ -404,4 +447,3 @@ describe('ApiProviderRuntime — tool policy and budgets', () => {
     expect(calls).toBe(1);
   });
 });
-
