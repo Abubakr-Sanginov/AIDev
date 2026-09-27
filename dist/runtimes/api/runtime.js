@@ -4,7 +4,7 @@ import { findPreset } from '../../providers/catalog.js';
 import * as toolsIndex from '../../tools/index.js';
 import { callOpenAiChat } from './openai.js';
 import { callAnthropicMessages } from './anthropic.js';
-import { isMutatingTool, selectTools, toolsForProtocol, } from './tools.js';
+import { isMutatingTool, selectTools, toolsForProtocol } from './tools.js';
 const MAX_TOOL_OUTPUT_CHARS = 12_000;
 async function report(request, activity) {
     await request.onActivity?.(activity);
@@ -115,18 +115,14 @@ export class ApiProviderRuntime {
             const tools = selectTools(toolsModule.allTools, request.toolPolicy);
             // Token economy: a role with a zero tool budget (e.g. manager) gets no
             // tool schemas at all, so the model answers in one cheap completion.
-            const schemas = request.maxToolCalls === 0
-                ? []
-                : toolsForProtocol(this.#provider.protocol, tools);
+            const schemas = request.maxToolCalls === 0 ? [] : toolsForProtocol(this.#provider.protocol, tools);
             const model = request.model ?? this.#provider.models[0] ?? 'default';
             // Soft budgets: near the ceiling the model is told to wrap up instead of
             // being cut off mid-work; only the safety ceilings force a hard stop.
             const softSteps = request.maxSteps ?? 10;
             const softCalls = request.maxToolCalls ?? Number.POSITIVE_INFINITY;
             const hardSteps = Math.max(softSteps * 4, 40);
-            const hardCalls = Number.isFinite(softCalls)
-                ? Math.max(softCalls * 5, 100)
-                : 500;
+            const hardCalls = Number.isFinite(softCalls) ? Math.max(softCalls * 5, 100) : 500;
             let toolCallsUsed = 0;
             let tokensUsed = 0;
             let budgetWarned = false;
@@ -157,7 +153,10 @@ export class ApiProviderRuntime {
                     return { content: cached, isError: false };
                 const tool = toolsModule.allTools.find((candidate) => candidate.definition.name === call.name);
                 if (request.toolPolicy === 'read-only' && isMutatingTool(call.name))
-                    return { content: `Tool '${call.name}' is not allowed in read-only mode.`, isError: true };
+                    return {
+                        content: `Tool '${call.name}' is not allowed in read-only mode.`,
+                        isError: true,
+                    };
                 if (!tool)
                     return { content: `Unknown tool '${call.name}'.`, isError: true };
                 let input;
@@ -192,7 +191,9 @@ export class ApiProviderRuntime {
                         messages,
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
-                        ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+                        ...(this.#transportDelaysMs === undefined
+                            ? {}
+                            : { transportDelaysMs: this.#transportDelaysMs }),
                         ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
                         ...(request.signal === undefined ? {} : { signal: request.signal }),
                     });
@@ -210,8 +211,7 @@ export class ApiProviderRuntime {
                             content: outcome.content,
                         });
                     }
-                    if (!budgetWarned &&
-                        (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
+                    if (!budgetWarned && (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
                         budgetWarned = true;
                         messages.push({ role: 'user', content: budgetWarning() });
                     }
@@ -231,7 +231,9 @@ export class ApiProviderRuntime {
                         messages,
                         tools: schemas,
                         ...(this.#fetchImpl === undefined ? {} : { fetchImpl: this.#fetchImpl }),
-                        ...(this.#transportDelaysMs === undefined ? {} : { transportDelaysMs: this.#transportDelaysMs }),
+                        ...(this.#transportDelaysMs === undefined
+                            ? {}
+                            : { transportDelaysMs: this.#transportDelaysMs }),
                         ...(this.#requestTimeoutMs === undefined ? {} : { timeoutMs: this.#requestTimeoutMs }),
                         ...(request.signal === undefined ? {} : { signal: request.signal }),
                     });
@@ -252,8 +254,7 @@ export class ApiProviderRuntime {
                         });
                     }
                     messages.push({ role: 'user', content: results });
-                    if (!budgetWarned &&
-                        (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
+                    if (!budgetWarned && (toolCallsUsed >= softCalls || step >= softSteps - 1)) {
                         budgetWarned = true;
                         messages.push({ role: 'user', content: budgetWarning() });
                     }

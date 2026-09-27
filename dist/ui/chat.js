@@ -94,11 +94,7 @@ export function renderRoleBlock(theme, info, width) {
     const metaLine = meta.length === 0
         ? undefined
         : theme.muted(`${indent}${theme.success('✓')} ${meta.join(' · ')}`);
-    return [
-        ...header,
-        ...wrapped.map((line) => indent + line),
-        ...(metaLine ? [metaLine] : []),
-    ].join('\n');
+    return [...header, ...wrapped.map((line) => indent + line), ...(metaLine ? [metaLine] : [])].join('\n');
 }
 const NOT_SCHEDULED = 'Agent was not scheduled for this workflow.';
 /**
@@ -107,8 +103,7 @@ const NOT_SCHEDULED = 'Agent was not scheduled for this workflow.';
  */
 export function renderEventLine(theme, event, width) {
     const firstLine = (event.message.split('\n')[0] ?? '').trim();
-    if (event.status === 'SKIPPED' &&
-        (firstLine === '' || firstLine === NOT_SCHEDULED))
+    if (event.status === 'SKIPPED' && (firstLine === '' || firstLine === NOT_SCHEDULED))
         return undefined;
     const indent = '  ';
     const headline = firstLine === '' ? '' : truncatePlain(firstLine, Math.max(24, width - 4));

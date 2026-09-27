@@ -19,7 +19,7 @@ import { INITIAL_UI_STATE, parseTerminalInput, reduceUiEvent, } from './ui/inter
 import { BROWSER_MODES, loadConfig, resetConfig, setConfigValue, } from './config.js';
 import { runBrowserCheck } from './browser/check.js';
 import { PauseGate } from './pause.js';
-import { freezeProcesses, killFrozenProcessesSync, killRunningProcesses, thawProcesses } from './runtimes/suspend.js';
+import { freezeProcesses, killFrozenProcessesSync, killRunningProcesses, thawProcesses, } from './runtimes/suspend.js';
 import { appendRunRecord, listRunRecords } from './history.js';
 import { runDoctor } from './doctor.js';
 import { writeReport } from './report.js';
@@ -733,9 +733,7 @@ async function runChat() {
     if (view.busy)
         process.exit(0);
 }
-program
-    .argument('[task...]', 'development task')
-    .action(async (task) => {
+program.argument('[task...]', 'development task').action(async (task) => {
     // A bare `ai-dev-team` opens the interactive chat (like Claude Code);
     // a task on the command line runs the one-shot workflow instead.
     if (task.length === 0 && process.stdout.isTTY) {
