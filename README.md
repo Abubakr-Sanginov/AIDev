@@ -139,7 +139,7 @@ Running `ai-dev-team` with no task opens a Claude Code-style chat instead of a o
 ```text
 $ ai-dev-team
 
- AI Dev Team  v0.5.0
+ AI Dev Team  v0.5.1
  Claude Code · Auto (3 models, free first)
  C:\Projects\my-app
 
